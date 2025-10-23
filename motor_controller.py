@@ -24,9 +24,9 @@ class PPConfig:
     node_id: int
     eds_path: str = "ZeroErr Driver_V1.5.eds"
     encoder_resolution: int = 524_288
-    profile_velocity_deg_s: float = 10.0
-    profile_accel_deg_s2: float = 10.0
-    profile_decel_deg_s2: float = 10.0
+    profile_velocity_deg_s: float = 30.0
+    profile_accel_deg_s2: float = 30.0
+    profile_decel_deg_s2: float = 30.0
     sync_period_s: Optional[float] = None
     tpdo_transmission_type: int = 1
     rpdo_transmission_type: int = 1
@@ -233,9 +233,12 @@ class ProfilePositionController:
                 exc,
             )
             return False
+        
     def try_remap_pdos_for_velocity_mode(self) -> bool:
         """
-        尝试通过 SDO 通信来重新映射节点适用于速度模式的 PDO 配置。
+        尝试通过 SDO 通信来重新映射节点适用于速度模式的 PDO 配置，
+        并在每个关键步骤后进行验证。
+
         Returns:
             bool: 如果 PDO 重新映射成功，返回 True；如果过程中出现任何错误，返回 False。
         """
@@ -244,35 +247,127 @@ class ProfilePositionController:
         txpdo1 = 0x180 + node_id
         rxpdo1 = 0x200 + node_id
 
+        def _verify_sdo(index: int, subindex: int, expected_value: int, name: str) -> bool:
+            """一个辅助函数，用于读取并验证 SDO 值。"""
+            try:
+                actual_value = node.sdo[index][subindex].raw
+                if actual_value != expected_value:
+                    log.error(
+                        f"Node 0x{node_id:02X}: Verification failed for {name} "
+                        f"(0x{index:04X}:{subindex}). Expected: 0x{expected_value:X}, Got: 0x{actual_value:X}"
+                    )
+                    return False
+                return True
+            except Exception as e:
+                log.error(
+                    f"Node 0x{node_id:02X}: Could not read {name} (0x{index:04X}:{subindex}) for verification: {e}"
+                )
+                return False
+
         try:
+            # --- 1. 禁用 PDO (设置最高位) ---
+            log.debug(f"Node 0x{node_id:02X}: Disabling PDOs for remapping.")
             node.sdo[0x1800][1].raw = txpdo1 | 0x8000_0000
             node.sdo[0x1400][1].raw = rxpdo1 | 0x8000_0000
+            if not (_verify_sdo(0x1800, 1, txpdo1 | 0x8000_0000, "TPDO1 COB-ID (disabled)") and
+                    _verify_sdo(0x1400, 1, rxpdo1 | 0x8000_0000, "RPDO1 COB-ID (disabled)")):
+                return False
 
+            # --- 2. 设置传输类型 ---
+            log.debug(f"Node 0x{node_id:02X}: Setting PDO transmission types.")
             node.sdo[0x1800][2].raw = self.cfg.tpdo_transmission_type
             node.sdo[0x1400][2].raw = self.cfg.rpdo_transmission_type
+            if not (_verify_sdo(0x1800, 2, self.cfg.tpdo_transmission_type, "TPDO1 Transmission Type") and
+                    _verify_sdo(0x1400, 2, self.cfg.rpdo_transmission_type, "RPDO1 Transmission Type")):
+                return False
 
+            # --- 3. 清空映射参数 ---
+            log.debug(f"Node 0x{node_id:02X}: Clearing PDO mapping parameters.")
             node.sdo[0x1A00][0].raw = 0
             node.sdo[0x1600][0].raw = 0
+            if not (_verify_sdo(0x1A00, 0, 0, "TPDO1 Number of Mapped Objects (cleared)") and
+                    _verify_sdo(0x1600, 0, 0, "RPDO1 Number of Mapped Objects (cleared)")):
+                return False
 
-            node.sdo[0x1A00][1].raw = 0x6041_0010
-            node.sdo[0x1A00][2].raw = 0x606C_0020
-            node.sdo[0x1A00][0].raw = 2
-            node.sdo[0x1600][1].raw = 0x6040_0010
-            # 0x607A_0020: 映射目标速度
-            node.sdo[0x1600][2].raw = 0x60FF_0020  # 速度模式下映射目标速度
-            node.sdo[0x1600][0].raw = 2
+            # --- 4. 配置 TPDO1 映射 ---
+            log.debug(f"Node 0x{node_id:02X}: Configuring TPDO1 mapping.")
+            node.sdo[0x1A00][1].raw = 0x6041_0010  # Statusword
+            node.sdo[0x1A00][2].raw = 0x6064_0020  # Position Actual Value
+            node.sdo[0x1A00][0].raw = 2            # Activate with 2 mapped objects
+            if not (_verify_sdo(0x1A00, 1, 0x6041_0010, "TPDO1 Mapping 1 (Statusword)") and
+                    _verify_sdo(0x1A00, 2, 0x6064_0020, "TPDO1 Mapping 2 (Position)") and
+                    _verify_sdo(0x1A00, 0, 2, "TPDO1 Number of Mapped Objects")):
+                return False
 
+            # --- 5. 配置 RPDO1 映射 ---
+            log.debug(f"Node 0x{node_id:02X}: Configuring RPDO1 mapping.")
+            node.sdo[0x1600][1].raw = 0x6040_0010  # Controlword
+            node.sdo[0x1600][2].raw = 0x60FF_0020  # Target Velocity
+            node.sdo[0x1600][0].raw = 2            # Activate with 2 mapped objects
+            if not (_verify_sdo(0x1600, 1, 0x6040_0010, "RPDO1 Mapping 1 (Controlword)") and
+                    _verify_sdo(0x1600, 2, 0x60FF_0020, "RPDO1 Mapping 2 (Target Velocity)") and
+                    _verify_sdo(0x1600, 0, 2, "RPDO1 Number of Mapped Objects")):
+                return False
+
+            # --- 6. 启用 PDO (清除最高位) ---
+            log.debug(f"Node 0x{node_id:02X}: Enabling PDOs after successful remapping.")
             node.sdo[0x1800][1].raw = txpdo1
             node.sdo[0x1400][1].raw = rxpdo1
-            
+            if not (_verify_sdo(0x1800, 1, txpdo1, "TPDO1 COB-ID (enabled)") and
+                    _verify_sdo(0x1400, 1, rxpdo1, "RPDO1 COB-ID (enabled)")):
+                return False
+
+            log.info(f"Node 0x{node_id:02X}: PDO remap and verification successful.")
             return True
-        except Exception as exc:  # pragma: no cover - device specific
-            log.debug(
-                "Node 0x%02X: PDO remap via SDO skipped (%s)",
-                node_id,
-                exc,
+
+        except Exception as exc:
+            # 捕获任何在写入或验证过程中发生的意外错误
+            log.error(
+                f"Node 0x{node_id:02X}: An unexpected error occurred during PDO remapping: {exc}",
+                exc_info=True # exc_info=True 会打印完整的堆栈跟踪，便于调试
             )
             return False
+
+    # def try_remap_pdos_for_velocity_mode(self) -> bool:
+    #     """
+    #     尝试通过 SDO 通信来重新映射节点适用于速度模式的 PDO 配置。
+    #     Returns:
+    #         bool: 如果 PDO 重新映射成功，返回 True；如果过程中出现任何错误，返回 False。
+    #     """
+    #     node = self.node
+    #     node_id = self.cfg.node_id
+    #     txpdo1 = 0x180 + node_id
+    #     rxpdo1 = 0x200 + node_id
+
+    #     try:
+    #         node.sdo[0x1800][1].raw = txpdo1 | 0x8000_0000
+    #         node.sdo[0x1400][1].raw = rxpdo1 | 0x8000_0000
+
+    #         node.sdo[0x1800][2].raw = self.cfg.tpdo_transmission_type
+    #         node.sdo[0x1400][2].raw = self.cfg.rpdo_transmission_type
+
+    #         node.sdo[0x1A00][0].raw = 0
+    #         node.sdo[0x1600][0].raw = 0
+
+    #         node.sdo[0x1A00][1].raw = 0x6041_0010
+    #         node.sdo[0x1A00][2].raw = 0x6064_0020
+    #         node.sdo[0x1A00][0].raw = 2
+    #         node.sdo[0x1600][1].raw = 0x6040_0010
+    #         # 0x607A_0020: 映射目标速度
+    #         node.sdo[0x1600][2].raw = 0x60FF_0020  # 速度模式下映射目标速度
+    #         node.sdo[0x1600][0].raw = 2
+
+    #         node.sdo[0x1800][1].raw = txpdo1
+    #         node.sdo[0x1400][1].raw = rxpdo1
+            
+    #         return True
+    #     except Exception as exc:  # pragma: no cover - device specific
+    #         log.debug(
+    #             "Node 0x%02X: PDO remap via SDO skipped (%s)",
+    #             node_id,
+    #             exc,
+    #         )
+    #         return False
 
     def try_remap_pdos_for_torque_mode(self) -> bool:
         """
@@ -296,7 +391,7 @@ class ProfilePositionController:
             node.sdo[0x1600][0].raw = 0
 
             node.sdo[0x1A00][1].raw = 0x6041_0010
-            node.sdo[0x1A00][2].raw = 0x6077_0010
+            node.sdo[0x1A00][2].raw = 0x6064_0020
             node.sdo[0x1A00][0].raw = 2
             node.sdo[0x1600][1].raw = 0x6040_0010
             # 0x607A_0020: 映射目标力矩
@@ -440,14 +535,15 @@ class ProfilePositionController:
                 control_var = rpdo1.get_variable(0x6040, 0)
 
             target_var.raw = velocity_counts
-            if not is_csv:
+            if is_csv == False:
                 control_var.raw = control_value
             else:
-                control_var.raw = 7
+                control_var.raw = 15  # 用于 CSV 模式下发控制字，避免冲突
             rpdo1.transmit()
         except (KeyError, AttributeError, ValueError):
             self.node.sdo[0x60FF].raw = velocity_counts
             self.node.sdo[0x6040].raw = control_value
+            print("使用 SDO 方式下发目标速度，性能较差，建议检查 PDO 配置")
 
     def set_target_velocity_deg_s(self, velocity_deg_s: float, *, halt: bool = False, is_csv: bool = False) -> None:
         velocity_counts = self.deg_per_s_to_counts(velocity_deg_s)
@@ -559,6 +655,7 @@ class ProfilePositionController:
                 "Node 0x%02X: PV PDO remap skipped, keeping previous mapping",
                 self.cfg.node_id,
             )
+            raise RuntimeError("PV 模式 PDO 重映射失败")
 
         try:
             self.node.sdo[0x60FF].raw = 0
@@ -641,7 +738,7 @@ class ProfilePositionController:
                 "Node 0x%02X: CSV PDO remap skipped, keeping previous mapping",
                 self.cfg.node_id,
             )
-
+        time.sleep(0.3)
         try:
             self.node.sdo[0x60FF].raw = 0
         except Exception as exc:
@@ -654,6 +751,8 @@ class ProfilePositionController:
         try:
             self.node.sdo[0x6060].raw = 0x09
             self._wait_mode(0x09)
+            log.info("Node 0x%02X: %d mode selected", self.cfg.node_id, self.node.sdo[0x6060].raw)
+            time.sleep(0.1)
         except Exception as exc:
             log.exception(
                 "Node 0x%02X: failed during CSV mode selection",

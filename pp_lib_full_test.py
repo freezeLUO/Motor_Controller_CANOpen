@@ -224,14 +224,14 @@ def main() -> None:
 
         controller.clear_faults()
         controller.enable_operation()
-        # 测试PP模式
-        controller.set_target_angle(20.0)
-        wait_for_target(controller, TARGET_REACHED_TIMEOUT_S)
-        time.sleep(1.0)
-        controller.set_target_angle(0.0)
-        time.sleep(1.0)
-        wait_for_target(controller, TARGET_REACHED_TIMEOUT_S)
-        time.sleep(1.0)
+        # # 测试PP模式
+        # controller.set_target_angle(20.0)
+        # wait_for_target(controller, TARGET_REACHED_TIMEOUT_S)
+        # time.sleep(1.0)
+        # controller.set_target_angle(0.0)
+        # time.sleep(1.0)
+        # wait_for_target(controller, TARGET_REACHED_TIMEOUT_S)
+        # time.sleep(1.0)
         #---
         # 测试 CSV 模式（PD 控制轨迹跟踪）
         controller.switch_to_cyclic_synchronous_velocity()
