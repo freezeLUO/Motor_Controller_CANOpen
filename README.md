@@ -44,7 +44,7 @@ network.disconnect()
 若需要进入周期同步位置模式，可在完成基本初始化后调用：
 
 ```python
-controller.switch_to_cyclic_synchronous_position(sync_period_s=0.01)
+controller.switch_to_cyclic_synchronous_position(sync_period_ms=0.20)
 ```
 
 方法内部会在停机状态下完成模式切换、将实际位置写回目标位置、重新配置 SYNC 并重新使能驱动。可通过参数覆盖默认的同步周期。未显式传入时会复用 `PPConfig.sync_period_s` 配置。

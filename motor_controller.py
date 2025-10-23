@@ -43,6 +43,7 @@ class ProfilePositionController:
         self._last_enable_ts = 0.0
         self._last_disable_ts = 0.0
         self._last_position_counts: Optional[int] = None
+        self._last_velocity_counts: Optional[int] = None
         self._control_toggle = True
 
     # ---------------- 单位换算 -----------------
@@ -54,6 +55,9 @@ class ProfilePositionController:
 
     def deg_per_s_to_counts(self, value: float) -> int:
         return int(value / 360.0 * self.cfg.encoder_resolution)
+
+    def counts_to_deg_per_s(self, counts: int) -> float:
+        return counts / self.cfg.encoder_resolution * 360.0
 
     # ---------------- 驱动初始化流程 -----------------
     def initialise(self) -> None:
@@ -115,7 +119,126 @@ class ProfilePositionController:
         self.node.tpdo.save()
         self.node.rpdo.save()
 
+    # def _try_remap_pdos_via_sdo(self) -> bool:
+    #     node = self.node
+    #     node_id = self.cfg.node_id
+    #     txpdo1 = 0x180 + node_id
+    #     rxpdo1 = 0x200 + node_id
+
+    #     try:
+    #         node.sdo[0x1800][1].raw = txpdo1 | 0x8000_0000
+    #         node.sdo[0x1400][1].raw = rxpdo1 | 0x8000_0000
+
+    #         node.sdo[0x1800][2].raw = self.cfg.tpdo_transmission_type
+    #         node.sdo[0x1400][2].raw = self.cfg.rpdo_transmission_type
+
+    #         node.sdo[0x1A00][0].raw = 0
+    #         node.sdo[0x1600][0].raw = 0
+
+    #         node.sdo[0x1A00][1].raw = 0x6041_0010
+    #         node.sdo[0x1A00][2].raw = 0x6064_0020
+    #         node.sdo[0x1A00][0].raw = 2
+
+    #         node.sdo[0x1600][1].raw = 0x6040_0010
+    #         node.sdo[0x1600][2].raw = 0x607A_0020
+    #         node.sdo[0x1600][0].raw = 2
+
+    #         node.sdo[0x1800][1].raw = txpdo1
+    #         node.sdo[0x1400][1].raw = rxpdo1
+    #         return True
+    #     except Exception as exc:  # pragma: no cover - device specific
+    #         log.debug(
+    #             "Node 0x%02X: PDO remap via SDO skipped (%s)",
+    #             node_id,
+    #             exc,
+    #         )
+    #         return False
     def _try_remap_pdos_via_sdo(self) -> bool:
+        """
+        尝试通过 SDO 通信来重新映射节点的 PDO (Process Data Objects) 配置。
+
+        这个函数会执行一个标准的 PDO 配置流程：
+        1. 禁用 PDO，防止在配置过程中发送不完整的数据。
+        2. 清除旧的 PDO 映射。
+        3. 设置新的 PDO 映射（将特定的对象字典条目映射到 PDO 中）。
+        4. 重新启用 PDO。
+
+        Returns:
+            bool: 如果 PDO 重新映射成功，返回 True；如果过程中出现任何错误，返回 False。
+        """
+        node = self.node
+        node_id = self.cfg.node_id
+
+        # 计算标准的 CANopen COB-ID (Communication Object Identifier)
+        # TPDO1 (Transmit PDO 1) 的默认功能码是 0x180
+        txpdo1 = 0x180 + node_id
+        # RPDO1 (Receive PDO 1) 的默认功能码是 0x200
+        rxpdo1 = 0x200 + node_id
+
+        try:
+            # --- 步骤 1: 禁用 PDO ---
+            # 通过设置 COB-ID 的最高位 (0x80000000) 来禁用 PDO。
+            # 这可以防止在配置更改期间，节点发送或接收不完整或无效的 PDO 数据。
+            # 0x1800 是 TPDO1 的通信参数对象索引。
+            node.sdo[0x1800][1].raw = txpdo1 | 0x8000_0000
+            # 0x1400 是 RPDO1 的通信参数对象索引。
+            node.sdo[0x1400][1].raw = rxpdo1 | 0x8000_0000
+
+            # --- 步骤 2: 设置传输类型 ---
+            # 配置 PDO 的传输方式（例如：同步、异步、事件驱动等）。
+            # 子索引 2 存储了传输类型。
+            node.sdo[0x1800][2].raw = self.cfg.tpdo_transmission_type
+            node.sdo[0x1400][2].raw = self.cfg.rpdo_transmission_type
+
+            # --- 步骤 3: 清除旧的 PDO 映射 ---
+            # 在设置新映射之前，必须先清空现有的映射。
+            # 0x1A00 是 TPDO1 的映射参数对象索引。
+            # 0x1600 是 RPDO1 的映射参数对象索引。
+            # 子索引 0 存储了映射的对象数量。将其设为 0 即可清空所有映射。
+            node.sdo[0x1A00][0].raw = 0
+            node.sdo[0x1600][0].raw = 0
+
+            # --- 步骤 4: 配置 TPDO1 的新映射 ---
+            # 将需要从节点发送出去的数据对象映射到 TPDO1。
+            # 映射格式为 0xIIIISSLL (索引, 子索引, 长度)。
+            # 0x6041_0010: 映射状态字 (Status Word, 索引 0x6041, 子索引 0x00, 长度 16 bits)
+            node.sdo[0x1A00][1].raw = 0x6041_0010
+            # 0x6064_0020: 映射位置实际值 (Position Actual Value, 索引 0x6064, 子索引 0x00, 长度 32 bits)
+            node.sdo[0x1A00][2].raw = 0x6064_0020
+            # 更新子索引 0，告诉节点现在 TPDO1 中映射了 2 个对象。
+            node.sdo[0x1A00][0].raw = 2
+
+            # --- 步骤 5: 配置 RPDO1 的新映射 ---
+            # 将需要发送给节点的控制对象映射到 RPDO1。
+            # 0x6040_0010: 映射控制字 (Control Word, 索引 0x6040, 子索引 0x00, 长度 16 bits)
+            node.sdo[0x1600][1].raw = 0x6040_0010
+            # 0x607A_0020: 映射目标位置 (Target Position, 索引 0x607A, 子索引 0x00, 长度 32 bits)
+            node.sdo[0x1600][2].raw = 0x607A_0020
+            # 更新子索引 0，告诉节点现在 RPDO1 中映射了 2 个对象。
+            node.sdo[0x1600][0].raw = 2
+
+            # --- 步骤 6: 重新启用 PDO ---
+            # 配置完成后，清除 COB-ID 的最高位，重新启用 PDO。
+            # 节点现在将根据新的映射和传输类型来处理 PDO。
+            node.sdo[0x1800][1].raw = txpdo1
+            node.sdo[0x1400][1].raw = rxpdo1
+            
+            return True
+        except Exception as exc:  # pragma: no cover - device specific
+            # 如果在上述任何 SDO 写入过程中发生错误（例如节点不响应、对象不存在等），
+            # 捕获异常并记录一条调试信息。
+            log.debug(
+                "Node 0x%02X: PDO remap via SDO skipped (%s)",
+                node_id,
+                exc,
+            )
+            return False
+    def try_remap_pdos_for_velocity_mode(self) -> bool:
+        """
+        尝试通过 SDO 通信来重新映射节点适用于速度模式的 PDO 配置。
+        Returns:
+            bool: 如果 PDO 重新映射成功，返回 True；如果过程中出现任何错误，返回 False。
+        """
         node = self.node
         node_id = self.cfg.node_id
         txpdo1 = 0x180 + node_id
@@ -132,15 +255,16 @@ class ProfilePositionController:
             node.sdo[0x1600][0].raw = 0
 
             node.sdo[0x1A00][1].raw = 0x6041_0010
-            node.sdo[0x1A00][2].raw = 0x6064_0020
+            node.sdo[0x1A00][2].raw = 0x606C_0020
             node.sdo[0x1A00][0].raw = 2
-
             node.sdo[0x1600][1].raw = 0x6040_0010
-            node.sdo[0x1600][2].raw = 0x607A_0020
+            # 0x607A_0020: 映射目标速度
+            node.sdo[0x1600][2].raw = 0x60FF_0020  # 速度模式下映射目标速度
             node.sdo[0x1600][0].raw = 2
 
             node.sdo[0x1800][1].raw = txpdo1
             node.sdo[0x1400][1].raw = rxpdo1
+            
             return True
         except Exception as exc:  # pragma: no cover - device specific
             log.debug(
@@ -149,6 +273,48 @@ class ProfilePositionController:
                 exc,
             )
             return False
+
+    def try_remap_pdos_for_torque_mode(self) -> bool:
+        """
+        尝试通过 SDO 通信来重新映射节点适用于扭矩模式的 PDO 配置。
+        Returns:
+            bool: 如果 PDO 重新映射成功，返回 True；如果过程中出现任何错误，返回 False。
+        """
+        node = self.node
+        node_id = self.cfg.node_id
+        txpdo1 = 0x180 + node_id
+        rxpdo1 = 0x200 + node_id
+
+        try:
+            node.sdo[0x1800][1].raw = txpdo1 | 0x8000_0000
+            node.sdo[0x1400][1].raw = rxpdo1 | 0x8000_0000
+
+            node.sdo[0x1800][2].raw = self.cfg.tpdo_transmission_type
+            node.sdo[0x1400][2].raw = self.cfg.rpdo_transmission_type
+
+            node.sdo[0x1A00][0].raw = 0
+            node.sdo[0x1600][0].raw = 0
+
+            node.sdo[0x1A00][1].raw = 0x6041_0010
+            node.sdo[0x1A00][2].raw = 0x6077_0010
+            node.sdo[0x1A00][0].raw = 2
+            node.sdo[0x1600][1].raw = 0x6040_0010
+            # 0x607A_0020: 映射目标力矩
+            node.sdo[0x1600][2].raw = 0x6071_0020  # 扭矩模式下映射目标力矩
+            node.sdo[0x1600][0].raw = 2
+
+            node.sdo[0x1800][1].raw = txpdo1
+            node.sdo[0x1400][1].raw = rxpdo1
+            
+            return True
+        except Exception as exc:  # pragma: no cover - device specific
+            log.debug(
+                "Node 0x%02X: PDO remap via SDO skipped (%s)",
+                node_id,
+                exc,
+            )
+            return False
+
 
     def configure_sync(self, period_s: float) -> None:
         self.network.sync.stop()
@@ -259,6 +425,34 @@ class ProfilePositionController:
     def set_target_angle(self, angle_deg: float) -> None:
         self.set_target_counts(self.angle_to_counts(angle_deg))
 
+    def set_target_velocity_counts(self, velocity_counts: int, *, halt: bool = False, is_csv: bool = False) -> None:
+        log.debug("Node 0x%02X: target velocity %d", self.cfg.node_id, velocity_counts)
+        control_value = 0x000F | (0x0100 if halt else 0x0000)
+        try:
+            rpdo1 = self.node.rpdo[1]
+            try:
+                target_var = rpdo1["Target velocity"]
+            except KeyError:
+                target_var = rpdo1.get_variable(0x60FF, 0)
+            try:
+                control_var = rpdo1["Controlword"]
+            except KeyError:
+                control_var = rpdo1.get_variable(0x6040, 0)
+
+            target_var.raw = velocity_counts
+            if not is_csv:
+                control_var.raw = control_value
+            else:
+                control_var.raw = 7
+            rpdo1.transmit()
+        except (KeyError, AttributeError, ValueError):
+            self.node.sdo[0x60FF].raw = velocity_counts
+            self.node.sdo[0x6040].raw = control_value
+
+    def set_target_velocity_deg_s(self, velocity_deg_s: float, *, halt: bool = False, is_csv: bool = False) -> None:
+        velocity_counts = self.deg_per_s_to_counts(velocity_deg_s)
+        self.set_target_velocity_counts(velocity_counts, halt=halt, is_csv=is_csv)
+
     def is_target_reached(self) -> bool:
         status = int(self.node.sdo[0x6041].raw)
         return bool(status & 0x0400)
@@ -295,6 +489,42 @@ class ProfilePositionController:
             "Failed to read position from PDO and no previous value is available."
         ) from pdo_error
 
+    def get_velocity_counts(self, *, allow_sdo_fallback: bool = True) -> int:
+        pdo_error: Optional[Exception] = None
+        try:
+            value = int(self.node.tpdo[1]["Velocity actual value"].raw)
+            self._last_velocity_counts = value
+            return value
+        except (KeyError, AttributeError, ObjectDictionaryError, ValueError) as exc:
+            pdo_error = exc
+
+        if allow_sdo_fallback:
+            try:
+                value = int(self.node.sdo[0x606C].raw)
+                self._last_velocity_counts = value
+                return value
+            except Exception as sdo_error:
+                log.warning(
+                    "Node 0x%02X: failed to read velocity via SDO fallback: %s",
+                    self.cfg.node_id,
+                    sdo_error,
+                )
+
+        if self._last_velocity_counts is not None:
+            log.warning(
+                "Node 0x%02X: PDO read failed, returning last known velocity",
+                self.cfg.node_id,
+            )
+            return self._last_velocity_counts
+
+        raise ValueError(
+            "Failed to read velocity from PDO and no previous value is available."
+        ) from pdo_error
+
+    def get_velocity_deg_s(self, *, allow_sdo_fallback: bool = True) -> float:
+        velocity_counts = self.get_velocity_counts(allow_sdo_fallback=allow_sdo_fallback)
+        return self.counts_to_deg_per_s(velocity_counts)
+
     def get_position_angle(self, *, allow_sdo_fallback: bool = True) -> float:
         counts = self.get_position_counts(allow_sdo_fallback=allow_sdo_fallback)
         return self.counts_to_angle(counts)
@@ -311,25 +541,221 @@ class ProfilePositionController:
                     log.exception("Node 0x%02X: failed to stop SYNC", self.cfg.node_id)
 
     # ---------------- 模式切换工具 -----------------
+    def switch_to_profile_velocity_mode(self) -> None:
+        """从当前模式切换到 CiA-402 轮廓速度模式（PV）。"""
+        log.info("Node 0x%02X: switching to PV mode", self.cfg.node_id)
+
+        try:
+            self.disable_operation()
+        except Exception:
+            log.exception(
+                "Node 0x%02X: failed to disable operation before PV switch",
+                self.cfg.node_id,
+            )
+            raise
+
+        if not self.try_remap_pdos_for_velocity_mode():
+            log.warning(
+                "Node 0x%02X: PV PDO remap skipped, keeping previous mapping",
+                self.cfg.node_id,
+            )
+
+        try:
+            self.node.sdo[0x60FF].raw = 0
+        except Exception as exc:  # pragma: no cover - 设备特定
+            log.exception(
+                "Node 0x%02X: failed to preload zero target velocity",
+                self.cfg.node_id,
+            )
+            raise RuntimeError("切换 PV 前写入 0 速度失败") from exc
+
+        try:
+            self.node.sdo[0x6060].raw = 0x03
+            self._wait_mode(0x03)
+        except Exception as exc:
+            log.exception(
+                "Node 0x%02X: failed during PV mode selection",
+                self.cfg.node_id,
+            )
+            raise RuntimeError("切换至 PV 模式失败") from exc
+
+        try:
+            self.clear_faults()
+        except Exception as exc:
+            log.exception(
+                "Node 0x%02X: failed to clear faults after PV switch",
+                self.cfg.node_id,
+            )
+            raise RuntimeError("PV 模式清故障失败") from exc
+
+        time.sleep(0.3)
+
+        try:
+            self.enable_operation()
+        except Exception as exc:
+            log.exception(
+                "Node 0x%02X: failed to re-enable operation in PV",
+                self.cfg.node_id,
+            )
+            raise RuntimeError("PV 模式启用失败") from exc
+
+    def switch_to_cyclic_synchronous_velocity(
+        self, sync_period_ms: Optional[float] = 20
+    ) -> None:
+        """切换到 CiA-402 周期同步速度模式（CSV）。"""
+        log.info("Node 0x%02X: switching to CSV mode", self.cfg.node_id)
+
+        if sync_period_ms is None:
+            if self.cfg.sync_period_s is None:
+                raise ValueError("sync_period_ms 未指定且配置中也未提供同步周期")
+            sync_period_ms = self.cfg.sync_period_s * 1000.0
+
+        try:
+            period_value = int(sync_period_ms)
+        except (TypeError, ValueError) as exc:  # pragma: no cover - 参数校验
+            raise ValueError(f"非法的同步周期数值: {sync_period_ms}") from exc
+
+        try:
+            self.node.sdo[0x60C2][1].raw = period_value
+            self.node.sdo[0x60C2][2].raw = -3
+        except Exception as exc:  # pragma: no cover - 设备特定
+            log.exception(
+                "Node 0x%02X: failed to configure CSV interpolation period",
+                self.cfg.node_id,
+            )
+            raise RuntimeError("配置 CSV 插补周期失败") from exc
+
+        time.sleep(0.2)
+
+        try:
+            self.disable_operation()
+        except Exception as exc:
+            log.exception(
+                "Node 0x%02X: failed to disable operation before CSV",
+                self.cfg.node_id,
+            )
+            raise RuntimeError("切换 CSV 前停机失败") from exc
+
+        if not self.try_remap_pdos_for_velocity_mode():
+            log.warning(
+                "Node 0x%02X: CSV PDO remap skipped, keeping previous mapping",
+                self.cfg.node_id,
+            )
+
+        try:
+            self.node.sdo[0x60FF].raw = 0
+        except Exception as exc:
+            log.exception(
+                "Node 0x%02X: failed to preload zero target velocity for CSV",
+                self.cfg.node_id,
+            )
+            raise RuntimeError("配置 CSV 初始速度失败") from exc
+
+        try:
+            self.node.sdo[0x6060].raw = 0x09
+            self._wait_mode(0x09)
+        except Exception as exc:
+            log.exception(
+                "Node 0x%02X: failed during CSV mode selection",
+                self.cfg.node_id,
+            )
+            raise RuntimeError("切换至 CSV 模式失败") from exc
+
+        try:
+            self.clear_faults()
+        except Exception as exc:
+            log.exception(
+                "Node 0x%02X: failed to clear faults after CSV switch",
+                self.cfg.node_id,
+            )
+            raise RuntimeError("CSV 模式清故障失败") from exc
+
+        time.sleep(0.3)
+
+        try:
+            self.enable_operation()
+        except Exception as exc:
+            log.exception(
+                "Node 0x%02X: failed to re-enable operation in CSV",
+                self.cfg.node_id,
+            )
+            raise RuntimeError("CSV 模式启用失败") from exc
+
     def switch_to_cyclic_synchronous_position(self, sync_period_ms: Optional[float] = 20) -> None:
         log.info("Node 0x%02X: switching to CSP mode", self.cfg.node_id)
+
+        if sync_period_ms is None:
+            if self.cfg.sync_period_s is None:
+                raise ValueError("sync_period_ms 未指定且配置中也未提供同步周期")
+            sync_period_ms = self.cfg.sync_period_s * 1000.0
+
+        try:
+            period_value = int(sync_period_ms)
+        except (TypeError, ValueError) as exc:  # pragma: no cover - 参数校验
+            raise ValueError(f"非法的同步周期数值: {sync_period_ms}") from exc
+
         log.info("设置同步周期为 %.3f ms", sync_period_ms)
-        self.node.sdo[0x60C2][1].raw = sync_period_ms   # 20 × 10^-3 = 0.02 s
-        self.node.sdo[0x60C2][2].raw = -3
+
+        try:
+            self.node.sdo[0x60C2][1].raw = period_value
+            self.node.sdo[0x60C2][2].raw = -3
+        except Exception as exc:  # pragma: no cover - 设备特定
+            log.exception("Node 0x%02X: failed to configure interpolation period", self.cfg.node_id)
+            raise RuntimeError("配置插补周期失败") from exc
+
         time.sleep(0.2)
-        self.disable_operation()
-        actual_counts = int(self.node.sdo[0x6064].raw)
-        self.node.sdo[0x607A].raw = actual_counts
-        self.node.sdo[0x6060].raw = 0x08
-        self._wait_mode(0x08)
+
+        try:
+            self.disable_operation()
+        except Exception as exc:
+            log.exception("Node 0x%02X: failed to disable operation before CSP", self.cfg.node_id)
+            raise RuntimeError("切换 CSP 前停机失败") from exc
+
+        try:
+            actual_counts = int(self.node.sdo[0x6064].raw)
+            self.node.sdo[0x607A].raw = actual_counts
+            self.node.sdo[0x6060].raw = 0x08
+            self._wait_mode(0x08)
+        except Exception as exc:
+            log.exception("Node 0x%02X: failed during CSP mode selection", self.cfg.node_id)
+            raise RuntimeError("切换至 CSP 模式失败") from exc
+
+        try:
+            self.clear_faults()
+        except Exception as exc:
+            log.exception("Node 0x%02X: failed to clear faults after CSP switch", self.cfg.node_id)
+            raise RuntimeError("CSP 模式清故障失败") from exc
+
+        time.sleep(0.3)
+
+        try:
+            self.enable_operation()
+        except Exception as exc:
+            log.exception("Node 0x%02X: failed to re-enable operation in CSP", self.cfg.node_id)
+            raise RuntimeError("CSP 模式启用失败") from exc
+
+    def switch_to_profile_position_mode(self) -> None:
+        """从 CSP 切回 CiA-402 轮廓位置模式（PP）。"""
+        log.info("Node 0x%02X: switching back to PP mode", self.cfg.node_id)
+
+        try:
+            self.disable_operation()
+        except Exception:
+            log.exception("Node 0x%02X: failed to disable operation before PP switch", self.cfg.node_id)
+            raise
+
+        try:
+            actual_counts = int(self.node.sdo[0x6064].raw)
+            self.node.sdo[0x607A].raw = actual_counts
+        except Exception:
+            log.exception("Node 0x%02X: failed to preload target position before PP switch", self.cfg.node_id)
+            raise
+
+        self.node.sdo[0x6060].raw = 0x01
+        self._wait_mode(0x01)
+
         self.clear_faults()
         time.sleep(0.3)
-        # if sync_period_s is not None:
-        #     self.cfg.sync_period_s = sync_period_s
-        #     self.configure_sync(sync_period_s)
-        # elif self.cfg.sync_period_s is not None:
-        #     self.configure_sync(self.cfg.sync_period_s)
-
         self.enable_operation()
 
 

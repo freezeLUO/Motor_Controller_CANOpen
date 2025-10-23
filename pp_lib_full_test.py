@@ -26,12 +26,14 @@ from typing import List, Tuple
 import can
 import canopen  # type: ignore
 import matplotlib.pyplot as plt
-
+plt.rcParams["font.family"] = "Noto Sans CJK SC"   # 名称要与字体内部名字一致
+plt.rcParams["axes.unicode_minus"] = False 
 from motor_controller import (  # type: ignore
     PPConfig,
     ProfilePositionController,
     SyncProducerHelper,
 )
+from csv_pd_runner import PDGains, run_csv_pd_trajectory
 
 log = logging.getLogger(__name__)
 
@@ -46,7 +48,7 @@ class BusConfig:
 SYNC_FREQUENCY_HZ = 50.0
 SYNC_PERIOD_MS = int(1000 / SYNC_FREQUENCY_HZ)
 SAMPLE_PERIOD_S = 1.0 / SYNC_FREQUENCY_HZ
-TRAJECTORY_DURATION_S = 12
+TRAJECTORY_DURATION_S = 6
 TRAJECTORY_AMPLITUDE_DEG = 30.0
 TRAJECTORY_FREQUENCY_HZ = 0.5
 TARGET_REACHED_TIMEOUT_S = 20.0
@@ -158,7 +160,7 @@ def run_csp_trajectory(
 
     try:
         sync_period = 1.0 / SYNC_FREQUENCY_HZ
-        expected_runtime = total_samples * sync_period + 2.0
+        expected_runtime = total_samples * sync_period + 20
         if not done.wait(expected_runtime):
             raise TimeoutError("轨迹发送超时，可能未收到 SYNC 帧")
     finally:
@@ -174,11 +176,11 @@ def plot_results(timestamps: List[float], planned: List[float], actual: List[flo
         raise ValueError("没有可绘制的数据")
 
     plt.figure(figsize=(10, 5))
-    plt.plot(timestamps, planned, label="规划角度")
-    plt.plot(timestamps, actual, label="实际角度", linestyle="--")
-    plt.xlabel("时间 (s)")
-    plt.ylabel("角度 (°)")
-    plt.title("CSP 轨迹跟踪对比")
+    plt.plot(timestamps, planned, label="Planned Angle")
+    plt.plot(timestamps, actual, label="Actual Angle", linestyle="--")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Angle (°)")
+    plt.title("CSP Trajectory Tracking Comparison")
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
@@ -222,7 +224,7 @@ def main() -> None:
 
         controller.clear_faults()
         controller.enable_operation()
-
+        # 测试PP模式
         controller.set_target_angle(20.0)
         wait_for_target(controller, TARGET_REACHED_TIMEOUT_S)
         time.sleep(1.0)
@@ -230,13 +232,58 @@ def main() -> None:
         time.sleep(1.0)
         wait_for_target(controller, TARGET_REACHED_TIMEOUT_S)
         time.sleep(1.0)
-
-        controller.switch_to_cyclic_synchronous_position()
+        #---
+        # 测试 CSV 模式（PD 控制轨迹跟踪）
+        controller.switch_to_cyclic_synchronous_velocity()
         time.sleep(1.0)
         base_angle = controller.get_position_angle()
-        trajectory = plan_linear_trajectory(base_angle)
-        timestamps, planned, actual = run_csp_trajectory(network, controller, trajectory)
-        plot_results(timestamps, planned, actual)
+        trajectory = plan_sine_trajectory(base_angle)
+        pd_gains = PDGains(kp=6.0, kd=0.3, velocity_limit_deg_s=120.0)
+        (
+            csv_timestamps,
+            csv_planned,
+            csv_actual,
+            csv_cmd_vel,
+            csv_actual_vel,
+        ) = run_csv_pd_trajectory(
+            network,
+            controller,
+            trajectory,
+            SAMPLE_PERIOD_S,
+            gains=pd_gains,
+        )
+        plot_results(csv_timestamps, csv_planned, csv_actual)
+        controller.switch_to_profile_position_mode()
+        time.sleep(1.0)
+
+        # # 测试CSP模式
+        # controller.switch_to_cyclic_synchronous_position()
+        # time.sleep(1.0)
+        # base_angle = controller.get_position_angle()
+        # trajectory = plan_sine_trajectory(base_angle)
+        # timestamps, planned, actual = run_csp_trajectory(network, controller, trajectory)
+        # plot_results(timestamps, planned, actual)
+        # # 测试切换回PP模式
+        # controller.switch_to_profile_position_mode()
+        # time.sleep(1.0)
+        # controller.set_target_angle(0.0)
+        # time.sleep(1.0)
+        # wait_for_target(controller, TARGET_REACHED_TIMEOUT_S)
+        # time.sleep(1.0)
+        # 测试PV模式
+        # controller.switch_to_profile_velocity_mode()
+        # time.sleep(2.0)
+        # controller.set_target_velocity_deg_s(20.0)
+        # time.sleep(1.0) 
+        # vel = controller.get_velocity_deg_s()
+        # print(f"当前速度: {vel} deg/s")
+        # time.sleep(1.0)
+        # controller.set_target_velocity_deg_s(0.0)
+        # time.sleep(2.0)
+        # vel = controller.get_velocity_deg_s()
+        # print(f"当前速度: {vel} deg/s")
+        # time.sleep(1.0)
+
     finally:
         if sync_enabled:
             try:
