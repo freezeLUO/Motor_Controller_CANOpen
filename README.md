@@ -1,66 +1,137 @@
-# 位置模式控制库
+# PP_lib：CiA-402 多模式辅助库
 
-这是一个基于 `python-canopen` 的轻量级封装，负责将 CiA-402 节点配置为 Profile Position（PP）模式，并提供若干状态机控制与运动命令的便捷方法。
+基于 `python-canopen` 的轻量封装，面向 ZeroErr / CiA-402 兼容驱动，覆盖 Profile Position (PP)、Profile Velocity (PV)、Profile Torque (PT) 以及 CSP / CSV / CST 等同步模式的初始化、PDO 映射与高层指令封装。
 
-## 功能特性
+## 主要特性
 
-- 在 PP 模式下完成 PDO、SYNC、SDO 的初始化配置。
-- 具备 300&nbsp;ms 间隔的故障清除与使能/失能流程。
-- 支持更新位置模式的速度、加速度、减速度参数。
-- 以编码器计数或角度下发目标位置。
-- 读取当前位置计数/角度以及目标到达标志位。
-- 可选启用 `network.sync` 作为 SYNC 生产者。
-- 按照手册流程切换至周期同步位置模式（CSP）。
-- 提供 `SyncProducerHelper` 用于把远程节点配置为 SYNC 生产者。
+- **统一初始化流程**：复位通信、模式确认、402 状态机过度、故障清除与 300 ms 节拍的 enable/disable 保护。
+- **PDO 自动配置**：支持 PP/PV/PT/CSP/CSV/CST 的 PDO 重映射与校验，并在映射后刷新 python-canopen 缓存，避免落回 SDO 写入。
+- **多模式运动接口**：
+  - 位置：`set_target_counts` / `set_target_angle`，自动维持 set-point toggle。
+  - 速度：`set_target_velocity_counts` / `set_target_velocity_deg_s`，CSV 模式内支持 SYNC 回调写入。
+  - 力矩：`set_target_torque` 与 `get_actual_torque`（SDO 读取 0x6077）。
+- **模式切换函数**：`switch_to_profile_velocity_mode`、`switch_to_profile_torque_mode`、`switch_to_cyclic_synchronous_position`、`switch_to_cyclic_synchronous_velocity`、`switch_to_cyclic_synchronous_torque`，均内置 PDO/SDO 配置及安全检查。
+- **同步工具**：`SyncProducerHelper` 通过 SDO 配置远程节点成为 SYNC 生产者。
+- **CSV 轨迹辅助**：`csv_pd_runner.run_csv_pd_trajectory` 提供基于 PD 的 CSV 轨迹跟踪线程，自动监听 SYNC 帧并写入速度。
 
-## 基本用法
+## 环境依赖
+
+- Python ≥ 3.10
+- `python-canopen`
+- `python-can` (底层 CAN 总线驱动)
+- 真实 CANopen 设备或 `vcan` 虚拟总线
+
+可选：`matplotlib` 用于 `pp_lib_full_test.py` 绘图演示。
+
+## 快速上手（PP 模式）
 
 ```python
 import canopen
-from pp_lib.motor_pp_controller import PPConfig, ProfilePositionController
+from motor_controller import PPConfig, ProfilePositionController
 
 network = canopen.Network()
-network.connect(bustype="pcan", channel="PCAN_USBBUS1", bitrate=1_000_000)
+network.connect(bustype="socketcan", channel="can0", bitrate=1_000_000)
 
-cfg = PPConfig(node_id=0x01, sync_period_s=0.01)
+cfg = PPConfig(node_id=0x04, sync_period_s=None)
 controller = ProfilePositionController(network, cfg)
+
 controller.initialise()
 controller.clear_faults()
 controller.enable_operation()
+
 controller.set_profile(velocity_deg_s=20.0, accel_deg_s2=50.0, decel_deg_s2=50.0)
 controller.set_target_angle(90.0)
 
-angle = controller.get_position_angle()
-print(f"current angle: {angle:.2f}°")
+print("角度:", controller.get_position_angle())
 
 controller.shutdown()
 network.disconnect()
 ```
 
-根据实际硬件调整网络参数、节点 ID 与位置模式曲线。库内部默认不启用日志，可在上层应用自行打开以便观察状态转换。
+根据具体硬件修改总线参数、节点 ID、EDS 路径等。
 
-## 切换至 CSP 模式
-
-若需要进入周期同步位置模式，可在完成基本初始化后调用：
+## 模式切换速查
 
 ```python
-controller.switch_to_cyclic_synchronous_position(sync_period_ms=0.20)
+controller.switch_to_profile_velocity_mode()
+controller.set_target_velocity_deg_s(30.0)
+
+controller.switch_to_profile_torque_mode(initial_torque=0)
+controller.set_target_torque(150)
+
+controller.switch_to_cyclic_synchronous_velocity(sync_period_ms=20)
+controller.set_target_velocity_deg_s(10.0, is_csv=True)
+
+controller.switch_to_cyclic_synchronous_torque(sync_period_ms=20, initial_torque=50)
+controller.set_target_torque(80, is_cst=True)
+
+controller.switch_to_cyclic_synchronous_position(sync_period_ms=20)
+controller.set_target_angle(45.0)
 ```
 
-方法内部会在停机状态下完成模式切换、将实际位置写回目标位置、重新配置 SYNC 并重新使能驱动。可通过参数覆盖默认的同步周期。未显式传入时会复用 `PPConfig.sync_period_s` 配置。
+所有切换函数都会：
 
-## 由指定节点产生 SYNC
+1. 停机并确保控制器处于 PRE-OP。
+2. 重映射 PDO 并验证写入。
+3. 预加载零速/零扭矩或当前位置。
+4. 选择目标模式并等待 Drive 状态。
+5. 清故障并重新启用。
 
-若不希望主站发送同步帧，可通过辅助类完成配置：
+若未显式传入 `sync_period_ms`，函数会尝试使用 `PPConfig.sync_period_s`。
+
+## CSV 模式轨迹执行
+
+`csv_pd_runner.py` 提供 PD 控制示例，兼顾 SYNC 监听与速度命令下发：
 
 ```python
-from pp_lib.motor_pp_controller import SyncProducerHelper
+from csv_pd_runner import PDGains, run_csv_pd_trajectory
+
+controller.switch_to_cyclic_synchronous_velocity(sync_period_ms=20)
+
+timestamps, planned, actual, cmd_vel, actual_vel = run_csv_pd_trajectory(
+    network,
+    controller,
+    trajectory=[0.0, 1.0, 2.0, ...],
+    sample_period_s=0.02,
+    gains=PDGains(kp=6.0, kd=0.3, velocity_limit_deg_s=120.0),
+)
+```
+
+内部会启动线程监听 `0x80` SYNC，自动处理异常并在结束时发送 halt。
+
+## SYNC 生产者配置
+
+```python
+from motor_controller import SyncProducerHelper
 
 sync_helper = SyncProducerHelper(network)
-sync_helper.enable_sync_producer(node_id=0x02, period_ms=10)
+sync_helper.enable_sync_producer(node_id=0x04, period_ms=20)
 
-# 需要停止时
-sync_helper.disable_sync_producer(0x02)
+# 停止时
+sync_helper.disable_sync_producer(node_id=0x04)
 ```
 
-调用前请确保网络中已添加该节点对象，且驱动允许通过 SDO 修改 0x1005 与 0x1006。
+调用前需确保网络对象已添加目标节点。
+
+## 日志建议
+
+库默认使用模块级 `log = logging.getLogger(__name__)`。若想屏蔽 python-canopen 在读取 PDO 配置时的冗余 INFO，可在上层应用调整：
+
+```python
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logging.getLogger("canopen.pdo").setLevel(logging.WARNING)
+```
+
+## 示例脚本
+
+- `pp_lib_full_test.py`：从 PP→PT→CSV 等模式的端到端演示，含轨迹规划与绘图。
+- `csv_pd_runner.py`：独立的 CSV 回调辅助。
+
+运行示例前请确认：
+
+1. `ZeroErr Driver_V1.5.eds` 可从当前目录访问。
+2. 目标驱动支持通过 SDO 写入 PDO 映射。
+3. 网络参数（`bustype` / `channel` / `bitrate`）与实际硬件匹配。
+
