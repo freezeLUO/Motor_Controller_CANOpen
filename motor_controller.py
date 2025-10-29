@@ -1,4 +1,4 @@
-"""基于 python-canopen 的轮廓位置模式（PP）辅助库。
+﻿"""基于 python-canopen 的轮廓位置模式（PP）辅助库。
 
 封装 PP 模式常用的节点初始化、状态机控制、轮廓参数设置、目标位置下发以及
 位置读取等操作，方便在上层应用中直接复用，不包含监控线程或交互逻辑。
@@ -119,40 +119,6 @@ class ProfilePositionController:
         self.node.tpdo.save()
         self.node.rpdo.save()
 
-    # def _try_remap_pdos_via_sdo(self) -> bool:
-    #     node = self.node
-    #     node_id = self.cfg.node_id
-    #     txpdo1 = 0x180 + node_id
-    #     rxpdo1 = 0x200 + node_id
-
-    #     try:
-    #         node.sdo[0x1800][1].raw = txpdo1 | 0x8000_0000
-    #         node.sdo[0x1400][1].raw = rxpdo1 | 0x8000_0000
-
-    #         node.sdo[0x1800][2].raw = self.cfg.tpdo_transmission_type
-    #         node.sdo[0x1400][2].raw = self.cfg.rpdo_transmission_type
-
-    #         node.sdo[0x1A00][0].raw = 0
-    #         node.sdo[0x1600][0].raw = 0
-
-    #         node.sdo[0x1A00][1].raw = 0x6041_0010
-    #         node.sdo[0x1A00][2].raw = 0x6064_0020
-    #         node.sdo[0x1A00][0].raw = 2
-
-    #         node.sdo[0x1600][1].raw = 0x6040_0010
-    #         node.sdo[0x1600][2].raw = 0x607A_0020
-    #         node.sdo[0x1600][0].raw = 2
-
-    #         node.sdo[0x1800][1].raw = txpdo1
-    #         node.sdo[0x1400][1].raw = rxpdo1
-    #         return True
-    #     except Exception as exc:  # pragma: no cover - device specific
-    #         log.debug(
-    #             "Node 0x%02X: PDO remap via SDO skipped (%s)",
-    #             node_id,
-    #             exc,
-    #         )
-    #         return False
     def _try_remap_pdos_via_sdo(self) -> bool:
         """
         尝试通过 SDO 通信来重新映射节点的 PDO (Process Data Objects) 配置。
@@ -459,6 +425,142 @@ class ProfilePositionController:
             )
             return False
 
+    def try_remap_pdos_for_csp_with_feedforward(self) -> bool:
+        """为带速度/力矩前馈的 CSP 模式重新映射 PDO，并新增一个 RPDO 用于前馈通道。"""
+        node = self.node
+        node_id = self.cfg.node_id
+        txpdo1 = 0x180 + node_id
+        rxpdo1 = 0x200 + node_id
+        rxpdo2 = 0x300 + node_id
+
+        def _verify_sdo(index: int, subindex: int, expected_value: int, name: str) -> bool:
+            try:
+                actual_value = node.sdo[index][subindex].raw
+                if actual_value != expected_value:
+                    log.error(
+                        "Node 0x%02X: Verification failed for %s (0x%04X:%d). Expected: 0x%X, Got: 0x%X",
+                        node_id,
+                        name,
+                        index,
+                        subindex,
+                        expected_value,
+                        actual_value,
+                    )
+                    return False
+                return True
+            except Exception as exc:  # pragma: no cover - defensive
+                log.error(
+                    "Node 0x%02X: Could not read %s (0x%04X:%d) for verification: %s",
+                    node_id,
+                    name,
+                    index,
+                    subindex,
+                    exc,
+                )
+                return False
+
+        try:
+            log.debug(f"Node 0x{node_id:02X}: Disabling PDOs for CSP feedforward remap.")
+            node.sdo[0x1800][1].raw = txpdo1 | 0x8000_0000
+            node.sdo[0x1400][1].raw = rxpdo1 | 0x8000_0000
+            node.sdo[0x1401][1].raw = rxpdo2 | 0x8000_0000
+            if not (
+                _verify_sdo(0x1800, 1, txpdo1 | 0x8000_0000, "TPDO1 COB-ID (disabled)")
+                and _verify_sdo(0x1400, 1, rxpdo1 | 0x8000_0000, "RPDO1 COB-ID (disabled)")
+                and _verify_sdo(0x1401, 1, rxpdo2 | 0x8000_0000, "RPDO2 COB-ID (disabled)")
+            ):
+                return False
+
+            log.debug(f"Node 0x{node_id:02X}: Setting CSP transmission types.")
+            node.sdo[0x1800][2].raw = self.cfg.tpdo_transmission_type
+            node.sdo[0x1400][2].raw = self.cfg.rpdo_transmission_type
+            node.sdo[0x1401][2].raw = self.cfg.rpdo_transmission_type
+            if not (
+                _verify_sdo(0x1800, 2, self.cfg.tpdo_transmission_type, "TPDO1 Transmission Type")
+                and _verify_sdo(0x1400, 2, self.cfg.rpdo_transmission_type, "RPDO1 Transmission Type")
+                and _verify_sdo(0x1401, 2, self.cfg.rpdo_transmission_type, "RPDO2 Transmission Type")
+            ):
+                return False
+
+            log.debug(f"Node 0x{node_id:02X}: Clearing CSP mapping parameters.")
+            node.sdo[0x1A00][0].raw = 0
+            node.sdo[0x1600][0].raw = 0
+            node.sdo[0x1601][0].raw = 0
+            if not (
+                _verify_sdo(0x1A00, 0, 0, "TPDO1 Number of Mapped Objects (cleared)")
+                and _verify_sdo(0x1600, 0, 0, "RPDO1 Number of Mapped Objects (cleared)")
+                and _verify_sdo(0x1601, 0, 0, "RPDO2 Number of Mapped Objects (cleared)")
+            ):
+                return False
+
+            log.debug(f"Node 0x{node_id:02X}: Configuring TPDO1 mapping for CSP.")
+            node.sdo[0x1A00][1].raw = 0x6041_0010
+            node.sdo[0x1A00][2].raw = 0x6064_0020
+            node.sdo[0x1A00][0].raw = 2
+            if not (
+                _verify_sdo(0x1A00, 1, 0x6041_0010, "TPDO1 Mapping 1 (Statusword)")
+                and _verify_sdo(0x1A00, 2, 0x6064_0020, "TPDO1 Mapping 2 (Position)")
+                and _verify_sdo(0x1A00, 0, 2, "TPDO1 Number of Mapped Objects")
+            ):
+                return False
+
+            log.debug(f"Node 0x{node_id:02X}: Configuring RPDO1 mapping for CSP.")
+            node.sdo[0x1600][1].raw = 0x6040_0010
+            node.sdo[0x1600][2].raw = 0x607A_0020
+            node.sdo[0x1600][0].raw = 2
+            if not (
+                _verify_sdo(0x1600, 1, 0x6040_0010, "RPDO1 Mapping 1 (Controlword)")
+                and _verify_sdo(0x1600, 2, 0x607A_0020, "RPDO1 Mapping 2 (Target Position)")
+                and _verify_sdo(0x1600, 0, 2, "RPDO1 Number of Mapped Objects")
+            ):
+                return False
+
+            log.debug(f"Node 0x{node_id:02X}: Configuring RPDO2 mapping for feedforward.")
+            node.sdo[0x1601][1].raw = 0x60B1_0020
+            node.sdo[0x1601][2].raw = 0x60B2_0010
+            node.sdo[0x1601][0].raw = 2
+            if not (
+                _verify_sdo(0x1601, 1, 0x60B1_0020, "RPDO2 Mapping 1 (Velocity Feedforward)")
+                and _verify_sdo(0x1601, 2, 0x60B2_0010, "RPDO2 Mapping 2 (Torque Feedforward)")
+                and _verify_sdo(0x1601, 0, 2, "RPDO2 Number of Mapped Objects")
+            ):
+                return False
+
+            log.debug(f"Node 0x{node_id:02X}: Enabling PDOs after CSP feedforward remap.")
+            node.sdo[0x1800][1].raw = txpdo1
+            node.sdo[0x1400][1].raw = rxpdo1
+            node.sdo[0x1401][1].raw = rxpdo2
+            if not (
+                _verify_sdo(0x1800, 1, txpdo1, "TPDO1 COB-ID (enabled)")
+                and _verify_sdo(0x1400, 1, rxpdo1, "RPDO1 COB-ID (enabled)")
+                and _verify_sdo(0x1401, 1, rxpdo2, "RPDO2 COB-ID (enabled)")
+            ):
+                return False
+
+            log.info(f"Node 0x{node_id:02X}: CSP PDO remap with feedforward successful.")
+
+            try:
+                node.tpdo.read()
+                node.rpdo.read()
+                node.rpdo[1].enabled = True
+                node.rpdo[2].enabled = True
+            except Exception as exc:  # pragma: no cover - defensive
+                log.warning(
+                    "Node 0x%02X: failed to refresh local PDO cache after CSP remap (%s)",
+                    node_id,
+                    exc,
+                )
+
+            return True
+        except Exception as exc:
+            log.error(
+                "Node 0x%02X: An unexpected error occurred during CSP PDO remapping: %s",
+                node_id,
+                exc,
+                exc_info=True,
+            )
+            return False
+
 
     def configure_sync(self, period_s: float) -> None:
         self.network.sync.stop()
@@ -568,6 +670,88 @@ class ProfilePositionController:
 
     def set_target_angle(self, angle_deg: float) -> None:
         self.set_target_counts(self.angle_to_counts(angle_deg))
+
+    def set_csp_target_with_feedforward(self,
+        position_deg: float,
+        velocity_feedforward_deg_s: float,
+        torque_feedforward: int,
+    ) -> None:
+        """在 CSP 模式下同时下发目标位置及速度/力矩前馈。"""
+        position_counts = self.angle_to_counts(position_deg)
+        velocity_feedforward_counts_s = self.deg_per_s_to_counts(velocity_feedforward_deg_s)
+        self.set_csp_target_counts_with_feedforward(
+            position_counts,
+            velocity_feedforward_counts_s,
+            torque_feedforward,
+        )
+
+    def set_csp_target_counts_with_feedforward(
+        self,
+        position_counts: int,
+        velocity_feedforward: int,
+        torque_feedforward: int,
+    ) -> None:
+        """在 CSP 模式下同时下发目标位置及速度/力矩前馈。"""
+        if torque_feedforward > 1000 or torque_feedforward < -1000:
+            log.warning(
+                "Node 0x%02X: feedforward torque %d outside recommended range (-1000, 1000)",
+                self.cfg.node_id,
+                torque_feedforward,
+            )
+
+        log.debug(
+            "Node 0x%02X: CSP target=%d vel_ff=%d torque_ff=%d",
+            self.cfg.node_id,
+            position_counts,
+            velocity_feedforward,
+            torque_feedforward,
+        )
+
+        control_value = 0x001F
+
+        try:
+            rpdo_pos = self.node.rpdo[1]
+            rpdo_ff = self.node.rpdo[2]
+
+            try:
+                position_var = rpdo_pos["Target Position"]
+            except KeyError:
+                position_var = rpdo_pos.get_variable(0x607A, 0)
+            try:
+                control_var = rpdo_pos["Controlword"]
+            except KeyError:
+                control_var = rpdo_pos.get_variable(0x6040, 0)
+
+            position_var.raw = position_counts
+            control_var.raw = control_value
+            rpdo_pos.transmit()
+
+            try:
+                velocity_var = rpdo_ff["Velocity feed forward value"]
+            except KeyError:
+                velocity_var = rpdo_ff.get_variable(0x60B1, 0)
+            try:
+                torque_var = rpdo_ff["Torque feed forward value"]
+            except KeyError:
+                torque_var = rpdo_ff.get_variable(0x60B2, 0)
+
+            velocity_var.raw = velocity_feedforward
+            torque_var.raw = torque_feedforward
+            rpdo_ff.transmit()
+
+            self._control_toggle = not self._control_toggle
+        except (KeyError, AttributeError, ValueError) as exc:
+            log.warning(
+                "Node 0x%02X: CSP PDO transmit failed, falling back to SDO (%s)",
+                self.cfg.node_id,
+                exc,
+            )
+            self.node.sdo[0x607A].raw = position_counts
+            self.node.sdo[0x60B1].raw = velocity_feedforward
+            self.node.sdo[0x60B2].raw = torque_feedforward
+            self.node.sdo[0x6040].raw = control_value
+            self.node.sdo[0x6040].raw = 0x000F
+            self._control_toggle = not self._control_toggle
 
     def set_target_velocity_counts(self, velocity_counts: int, *, halt: bool = False, is_csv: bool = False) -> None:
         log.debug("Node 0x%02X: target velocity %d", self.cfg.node_id, velocity_counts)
