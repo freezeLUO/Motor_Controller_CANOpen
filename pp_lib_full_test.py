@@ -224,37 +224,37 @@ def main() -> None:
 
         controller.clear_faults()
         controller.enable_operation()
-        # # 测试PP模式
-        # controller.set_target_angle(20.0)
-        # wait_for_target(controller, TARGET_REACHED_TIMEOUT_S)
-        # time.sleep(1.0)
-        # controller.set_target_angle(0.0)
-        # time.sleep(1.0)
-        # wait_for_target(controller, TARGET_REACHED_TIMEOUT_S)
-        # time.sleep(1.0)
+        # 测试PP模式
+        controller.set_target_angle(20.0)
+        wait_for_target(controller, TARGET_REACHED_TIMEOUT_S)
+        time.sleep(1.0)
+        controller.set_target_angle(0.0)
+        time.sleep(1.0)
+        wait_for_target(controller, TARGET_REACHED_TIMEOUT_S)
+        time.sleep(1.0)
         #---
-        # 测试 CSV 模式（PD 控制轨迹跟踪）
-        controller.switch_to_cyclic_synchronous_velocity()
-        time.sleep(1.0)
-        base_angle = controller.get_position_angle()
-        trajectory = plan_sine_trajectory(base_angle)
-        pd_gains = PDGains(kp=6.0, kd=0.3, velocity_limit_deg_s=120.0)
-        (
-            csv_timestamps,
-            csv_planned,
-            csv_actual,
-            csv_cmd_vel,
-            csv_actual_vel,
-        ) = run_csv_pd_trajectory(
-            network,
-            controller,
-            trajectory,
-            SAMPLE_PERIOD_S,
-            gains=pd_gains,
-        )
-        plot_results(csv_timestamps, csv_planned, csv_actual)
-        controller.switch_to_profile_position_mode()
-        time.sleep(1.0)
+        # # 测试 CSV 模式（PD 控制轨迹跟踪）
+        # controller.switch_to_cyclic_synchronous_velocity()
+        # time.sleep(1.0)
+        # base_angle = controller.get_position_angle()
+        # trajectory = plan_sine_trajectory(base_angle)
+        # pd_gains = PDGains(kp=6.0, kd=0.3, velocity_limit_deg_s=120.0)
+        # (
+        #     csv_timestamps,
+        #     csv_planned,
+        #     csv_actual,
+        #     csv_cmd_vel,
+        #     csv_actual_vel,
+        # ) = run_csv_pd_trajectory(
+        #     network,
+        #     controller,
+        #     trajectory,
+        #     SAMPLE_PERIOD_S,
+        #     gains=pd_gains,
+        # )
+        # plot_results(csv_timestamps, csv_planned, csv_actual)
+        # controller.switch_to_profile_position_mode()
+        # time.sleep(1.0)
 
         # # 测试CSP模式
         # controller.switch_to_cyclic_synchronous_position()
@@ -270,19 +270,40 @@ def main() -> None:
         # time.sleep(1.0)
         # wait_for_target(controller, TARGET_REACHED_TIMEOUT_S)
         # time.sleep(1.0)
-        # 测试PV模式
+        # # 测试PV模式
         # controller.switch_to_profile_velocity_mode()
-        # time.sleep(2.0)
+        # time.sleep(1.0)
         # controller.set_target_velocity_deg_s(20.0)
-        # time.sleep(1.0) 
+        # time.sleep(2.0) 
         # vel = controller.get_velocity_deg_s()
         # print(f"当前速度: {vel} deg/s")
+        # pos = controller.get_position_angle(allow_sdo_fallback=False)
+        # print(f"当前角度: {pos} deg")
         # time.sleep(1.0)
         # controller.set_target_velocity_deg_s(0.0)
         # time.sleep(2.0)
         # vel = controller.get_velocity_deg_s()
         # print(f"当前速度: {vel} deg/s")
+        # pos = controller.get_position_angle(allow_sdo_fallback=False)
+        # print(f"当前角度: {pos} deg")
         # time.sleep(1.0)
+        # 测试 PT 模式
+        controller.switch_to_profile_torque_mode(initial_torque=0)
+        # time.sleep(1.0)
+        # controller.set_target_torque(100, is_cst=True)
+        # time.sleep(1.0)
+        # tor = controller.get_actual_torque()
+        # print(f"当前力矩: {tor}")
+        # pos = controller.get_position_angle(allow_sdo_fallback=False)
+        # print(f"当前角度: {pos} deg")
+        # time.sleep(1.0)
+        # controller.set_target_torque(-50, is_cst=True)
+        # time.sleep(1.0)
+        # tor = controller.get_actual_torque()
+        # print(f"当前力矩: {tor}")
+        # pos = controller.get_position_angle(allow_sdo_fallback=False)
+        # print(f"当前角度: {pos} deg")
+
 
     finally:
         if sync_enabled:
