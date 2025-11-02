@@ -320,16 +320,20 @@ class ProfilePositionController:
         try:
             def _verify_sdo(index: int, subindex: int, expected_value: int, name: str) -> bool:
                 try:
-                    actual_value = node.sdo[index][subindex].raw
-                    if actual_value != expected_value:
+                    raw_value = node.sdo[index][subindex].raw
+                    actual_value = int(raw_value)
+                    expected_uint = expected_value & 0xFFFFFFFF
+                    actual_uint = actual_value & 0xFFFFFFFF
+                    if actual_uint != expected_uint:
                         log.error(
-                            "Node 0x%02X: Verification failed for %s (0x%04X:%d). Expected: 0x%X, Got: 0x%X",
+                            "Node 0x%02X: Verification failed for %s (0x%04X:%d). Expected: 0x%X, Got: 0x%X (raw=%s)",
                             node_id,
                             name,
                             index,
                             subindex,
-                            expected_value,
-                            actual_value,
+                            expected_uint,
+                            actual_uint,
+                            raw_value,
                         )
                         return False
                     return True
@@ -643,7 +647,7 @@ class ProfilePositionController:
         self.cfg.profile_decel_deg_s2 = decel_deg_s2
         self._configure_profile()
 
-    def set_target_counts(self, counts: int) -> None:
+    def set_target_counts(self, counts: int, is_csp: bool=False) -> None:
         log.debug("Node 0x%02X: target counts %d", self.cfg.node_id, counts)
         try:
             rpdo1 = self.node.rpdo[1]
@@ -657,19 +661,27 @@ class ProfilePositionController:
                 control_var = rpdo1.get_variable(0x6040, 0)
 
             target_var.raw = counts
-            # control_bits = 0x0F | (0x10 if self._control_toggle else 0x00)
-            # control_var.raw = control_bits
-            control_var.raw = 0x1F
-            rpdo1.transmit()
-            self._control_toggle = not self._control_toggle
+            if is_csp:
+                control_var.raw = 0x1F
+                rpdo1.transmit()
+            else:
+                # 保证每次都有 New Set-Point 位的上升沿，避免部分驱动忽略新目标
+                control_var.raw = 0x0F
+                rpdo1.transmit()
+                target_var.raw = counts
+                control_var.raw = 0x1F
+                rpdo1.transmit()
         except (KeyError, AttributeError, ValueError):
             self.node.sdo[0x607A].raw = counts
-            self.node.sdo[0x6040].raw = 0x3F
-            self.node.sdo[0x6040].raw = 0x0F
+            if is_csp:
+                self.node.sdo[0x6040].raw = 0x1F
+            else:
+                self.node.sdo[0x6040].raw = 0x0F
+                self.node.sdo[0x6040].raw = 0x1F
             log.warning("使用 SDO 方式下发目标位置，性能较差，建议检查 PDO 配置")
 
-    def set_target_angle(self, angle_deg: float) -> None:
-        self.set_target_counts(self.angle_to_counts(angle_deg))
+    def set_target_angle(self, angle_deg: float, is_csp: bool=False) -> None:
+        self.set_target_counts(self.angle_to_counts(angle_deg), is_csp=is_csp)
 
     def set_csp_target_with_feedforward(self,
         position_deg: float,

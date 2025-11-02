@@ -1,3 +1,8 @@
+# 待解决：
+
+1. 力矩模式的的pdo映射存在问题
+2. CST模式待验证
+---
 # PP_lib：CiA-402 多模式辅助库
 
 基于 `python-canopen` 的轻量封装，面向 ZeroErr / CiA-402 兼容驱动，覆盖 Profile Position (PP)、Profile Velocity (PV)、Profile Torque (PT) 以及 CSP / CSV / CST 等同步模式的初始化、PDO 映射与高层指令封装。

@@ -22,7 +22,7 @@ class PDGains:
 
     kp: float = 6.0
     kd: float = 0.3
-    velocity_limit_deg_s: float = 180.0
+    velocity_limit_deg_s: float = 50.0
 
 
 def _clamp(value: float, limit: float) -> float:
@@ -85,10 +85,15 @@ def run_csv_pd_trajectory(
                 return
 
             target_angle = trajectory[sample_index]
-            actual_angle = controller.get_position_angle()  
+            actual_angle = controller.get_position_angle()
             print(f"当前角度: {actual_angle} deg")
-            # actual_velocity = controller.get_velocity_deg_s()
-            # print(f"当前速度: {actual_velocity} deg/s")
+            try:
+                actual_velocity = controller.get_velocity_deg_s()
+            except Exception:
+                log.debug("读取实际速度失败，记录为 NaN", exc_info=True)
+                actual_velocity = float("nan")
+            else:
+                print(f"当前速度: {actual_velocity} deg/s")
             error = target_angle - actual_angle
             derivative = (error - prev_error) / sample_period_s if sample_period_s > 0 else 0.0
             command_velocity = gains.kp * error + gains.kd * derivative
@@ -100,7 +105,7 @@ def run_csv_pd_trajectory(
             planned.append(target_angle)
             actual.append(actual_angle)
             commanded_velocities.append(command_velocity)
-            # actual_velocities.append(actual_velocity)
+            actual_velocities.append(actual_velocity)
 
             prev_error = error
             sample_index += 1
@@ -135,7 +140,7 @@ def run_csv_pd_trajectory(
     worker_thread.start()
 
     try:
-        expected_runtime = total_samples * sample_period_s + 20.0
+        expected_runtime = total_samples * sample_period_s + 40.0
         if not done.wait(expected_runtime):
             raise TimeoutError("CSV 轨迹执行超时，可能未收到 SYNC 帧")
     finally:
@@ -148,4 +153,4 @@ def run_csv_pd_trajectory(
             f"CSV 轨迹执行未完成: 预期 {total_samples}, 实际 {len(planned)}"
         )
 
-    return timestamps, planned, actual, commanded_velocities
+    return timestamps, planned, actual, commanded_velocities, actual_velocities
