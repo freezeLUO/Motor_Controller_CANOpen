@@ -32,6 +32,18 @@ class PPConfig:
     rpdo_transmission_type: int = 1
 
 
+@dataclass(slots=True)
+class ControllerParameters:
+    position_kp: int | None = None
+    velocity_kp: int | None = None
+    velocity_ki: int | None = None
+    current_kp: int | None = None
+    current_ki: int | None = None
+    velocity_feedforward: int | None = None
+    integral_limit_ma: int | None = None
+    pid_switch: bool | None = None
+
+
 class ProfilePositionController:
     """CiA-402 轮廓位置模式的高层控制器封装。"""
 
@@ -388,11 +400,12 @@ class ProfilePositionController:
 
             log.debug(f"Node 0x{node_id:02X}: Configuring torque RPDO mapping.")
             node.sdo[0x1600][1].raw = 0x6040_0010
-            node.sdo[0x1600][2].raw = 0x6071_0020
+            # 0x6071 是 16-bit，部分驱动无法接受 32-bit 映射
+            node.sdo[0x1600][2].raw = 0x6071_0010
             node.sdo[0x1600][0].raw = 2
             if not (
                 _verify_sdo(0x1600, 1, 0x6040_0010, "RPDO1 Mapping 1 (Controlword)")
-                and _verify_sdo(0x1600, 2, 0x6071_0020, "RPDO1 Mapping 2 (Target Torque)")
+                and _verify_sdo(0x1600, 2, 0x6071_0010, "RPDO1 Mapping 2 (Target Torque)")
                 and _verify_sdo(0x1600, 0, 2, "RPDO1 Number of Mapped Objects")
             ):
                 return False
@@ -646,6 +659,76 @@ class ProfilePositionController:
         self.cfg.profile_accel_deg_s2 = accel_deg_s2
         self.cfg.profile_decel_deg_s2 = decel_deg_s2
         self._configure_profile()
+
+    def read_control_parameters(self) -> ControllerParameters:
+        node = self.node
+
+        def _read(index: int, subindex: int) -> int:
+            return int(node.sdo[index][subindex].raw)
+
+        params = ControllerParameters(
+            position_kp=_read(0x2382, 0x01),
+            velocity_kp=_read(0x2381, 0x01),
+            velocity_ki=_read(0x2381, 0x02),
+            current_kp=_read(0x2380, 0x01),
+            current_ki=_read(0x2380, 0x02),
+            velocity_feedforward=_read(0x2382, 0x03),
+            integral_limit_ma=_read(0x3000, 0x00),
+            pid_switch=bool(_read(0x2383, 0x00)),
+        )
+        return params
+
+    def write_control_parameters(
+        self,
+        params: ControllerParameters,
+        *,
+        verify: bool = True,
+    ) -> None:
+        node = self.node
+
+        mapping: list[tuple[str, tuple[int, int], int, int, bool]] = [
+            ("position_kp", (0x2382, 0x01), 0x0000, 0xFFFF, False),
+            ("velocity_kp", (0x2381, 0x01), 0x0000, 0xFFFF, False),
+            ("velocity_ki", (0x2381, 0x02), 0x0000, 0xFFFF, False),
+            ("current_kp", (0x2380, 0x01), 0x0000, 0xFFFF, False),
+            ("current_ki", (0x2380, 0x02), 0x0000, 0xFFFF, False),
+            ("velocity_feedforward", (0x2382, 0x03), 0x0000, 0xFFFF, False),
+            ("integral_limit_ma", (0x3000, 0x00), 0x00000000, 0x00001F40, False),
+            ("pid_switch", (0x2383, 0x00), 0x0000, 0x0001, True),
+        ]
+
+        for field_name, (index, subindex), min_val, max_val, is_bool in mapping:
+            value = getattr(params, field_name)
+            if value is None:
+                continue
+            if is_bool:
+                raw_value = 1 if value else 0
+            else:
+                raw_value = int(value)
+            if raw_value < min_val or raw_value > max_val:
+                raise ValueError(
+                    f"{field_name} 超出合法范围: {raw_value} not in [{min_val}, {max_val}]"
+                )
+            node.sdo[index][subindex].raw = raw_value
+
+        if verify:
+            time.sleep(0.1)
+            current = self.read_control_parameters()
+            for field_name, *_ in mapping:
+                expected = getattr(params, field_name)
+                if expected is None:
+                    continue
+                actual = getattr(current, field_name)
+                if expected is True or expected is False:
+                    cmp_expected = bool(expected)
+                    cmp_actual = bool(actual)
+                else:
+                    cmp_expected = expected
+                    cmp_actual = actual
+                if cmp_actual != cmp_expected:
+                    raise RuntimeError(
+                        f"写入 {field_name} 失败: 预期 {cmp_expected}, 实际 {cmp_actual}"
+                    )
 
     def set_target_counts(self, counts: int, is_csp: bool=False) -> None:
         log.debug("Node 0x%02X: target counts %d", self.cfg.node_id, counts)
@@ -1078,25 +1161,25 @@ class ProfilePositionController:
         """切换到 CiA-402 周期同步速度模式（CSV）。"""
         log.info("Node 0x%02X: switching to CSV mode", self.cfg.node_id)
 
-        if sync_period_ms is None:
-            if self.cfg.sync_period_s is None:
-                raise ValueError("sync_period_ms 未指定且配置中也未提供同步周期")
-            sync_period_ms = self.cfg.sync_period_s * 1000.0
+        # if sync_period_ms is None:
+        #     if self.cfg.sync_period_s is None:
+        #         raise ValueError("sync_period_ms 未指定且配置中也未提供同步周期")
+        #     sync_period_ms = self.cfg.sync_period_s * 1000.0
 
-        try:
-            period_value = int(sync_period_ms)
-        except (TypeError, ValueError) as exc:  # pragma: no cover - 参数校验
-            raise ValueError(f"非法的同步周期数值: {sync_period_ms}") from exc
+        # try:
+        #     period_value = int(sync_period_ms)
+        # except (TypeError, ValueError) as exc:  # pragma: no cover - 参数校验
+        #     raise ValueError(f"非法的同步周期数值: {sync_period_ms}") from exc
 
-        try:
-            self.node.sdo[0x60C2][1].raw = period_value
-            self.node.sdo[0x60C2][2].raw = -3
-        except Exception as exc:  # pragma: no cover - 设备特定
-            log.exception(
-                "Node 0x%02X: failed to configure CSV interpolation period",
-                self.cfg.node_id,
-            )
-            raise RuntimeError("配置 CSV 插补周期失败") from exc
+        # try:
+        #     self.node.sdo[0x60C2][1].raw = period_value
+        #     self.node.sdo[0x60C2][2].raw = -3
+        # except Exception as exc:  # pragma: no cover - 设备特定
+        #     log.exception(
+        #         "Node 0x%02X: failed to configure CSV interpolation period",
+        #         self.cfg.node_id,
+        #     )
+        #     raise RuntimeError("配置 CSV 插补周期失败") from exc
 
         time.sleep(0.2)
 
@@ -1164,25 +1247,25 @@ class ProfilePositionController:
         """切换到 CiA-402 周期同步扭矩模式（CST），并预载入初始扭矩。"""
         log.info("Node 0x%02X: switching to CST mode", self.cfg.node_id)
 
-        if sync_period_ms is None:
-            if self.cfg.sync_period_s is None:
-                raise ValueError("sync_period_ms 未指定且配置中也未提供同步周期")
-            sync_period_ms = self.cfg.sync_period_s * 1000.0
+        # if sync_period_ms is None:
+        #     if self.cfg.sync_period_s is None:
+        #         raise ValueError("sync_period_ms 未指定且配置中也未提供同步周期")
+        #     sync_period_ms = self.cfg.sync_period_s * 1000.0
 
-        try:
-            period_value = int(sync_period_ms)
-        except (TypeError, ValueError) as exc:  # pragma: no cover - 参数校验
-            raise ValueError(f"非法的同步周期数值: {sync_period_ms}") from exc
+        # try:
+        #     period_value = int(sync_period_ms)
+        # except (TypeError, ValueError) as exc:  # pragma: no cover - 参数校验
+        #     raise ValueError(f"非法的同步周期数值: {sync_period_ms}") from exc
 
-        try:
-            self.node.sdo[0x60C2][1].raw = period_value
-            self.node.sdo[0x60C2][2].raw = -3
-        except Exception as exc:  # pragma: no cover - 设备特定
-            log.exception(
-                "Node 0x%02X: failed to configure CST interpolation period",
-                self.cfg.node_id,
-            )
-            raise RuntimeError("配置 CST 插补周期失败") from exc
+        # try:
+        #     self.node.sdo[0x60C2][1].raw = period_value
+        #     self.node.sdo[0x60C2][2].raw = -3
+        # except Exception as exc:  # pragma: no cover - 设备特定
+        #     log.exception(
+        #         "Node 0x%02X: failed to configure CST interpolation period",
+        #         self.cfg.node_id,
+        #     )
+        #     raise RuntimeError("配置 CST 插补周期失败") from exc
 
         time.sleep(0.2)
 
@@ -1259,26 +1342,27 @@ class ProfilePositionController:
             )
 
     def switch_to_cyclic_synchronous_position(self, sync_period_ms: Optional[float] = 20) -> None:
+        # 切换到 CiA-402 周期同步位置模式（CSP）。
         log.info("Node 0x%02X: switching to CSP mode", self.cfg.node_id)
 
-        if sync_period_ms is None:
-            if self.cfg.sync_period_s is None:
-                raise ValueError("sync_period_ms 未指定且配置中也未提供同步周期")
-            sync_period_ms = self.cfg.sync_period_s * 1000.0
+        # if sync_period_ms is None:
+        #     if self.cfg.sync_period_s is None:
+        #         raise ValueError("sync_period_ms 未指定且配置中也未提供同步周期")
+        #     sync_period_ms = self.cfg.sync_period_s * 1000.0
 
-        try:
-            period_value = int(sync_period_ms)
-        except (TypeError, ValueError) as exc:  # pragma: no cover - 参数校验
-            raise ValueError(f"非法的同步周期数值: {sync_period_ms}") from exc
+        # try:
+        #     period_value = int(sync_period_ms)
+        # except (TypeError, ValueError) as exc:  # pragma: no cover - 参数校验
+        #     raise ValueError(f"非法的同步周期数值: {sync_period_ms}") from exc
 
-        log.info("设置同步周期为 %.3f ms", sync_period_ms)
+        # log.info("设置同步周期为 %.3f ms", sync_period_ms)
 
-        try:
-            self.node.sdo[0x60C2][1].raw = period_value
-            self.node.sdo[0x60C2][2].raw = -3
-        except Exception as exc:  # pragma: no cover - 设备特定
-            log.exception("Node 0x%02X: failed to configure interpolation period", self.cfg.node_id)
-            raise RuntimeError("配置插补周期失败") from exc
+        # try:
+        #     self.node.sdo[0x60C2][1].raw = period_value
+        #     self.node.sdo[0x60C2][2].raw = -3
+        # except Exception as exc:  # pragma: no cover - 设备特定
+        #     log.exception("Node 0x%02X: failed to configure interpolation period", self.cfg.node_id)
+        #     raise RuntimeError("配置插补周期失败") from exc
 
         time.sleep(0.2)
 

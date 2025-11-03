@@ -267,6 +267,7 @@ def run_csp_trajectory(
         raise RuntimeError(f"轨迹执行未完成，采样数量不足: 预期 {total_samples}, 实际 {len(planned)}")
 
     return timestamps, planned, actual
+
 def plot_results(timestamps: List[float], planned: List[float], actual: List[float]) -> None:
     if not timestamps:
         raise ValueError("没有可绘制的数据")
