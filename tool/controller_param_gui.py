@@ -9,8 +9,9 @@ from tkinter import messagebox
 from tkinter.scrolledtext import ScrolledText
 from typing import Any, Dict, Optional
 
-import can  # type: ignore
-import canopen  # type: ignore
+import can  
+import canopen  
+import time
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +192,7 @@ class ControllerParameterGUI:
 		for field in PARAMETER_FIELDS:
 			try:
 				raw_value = int(self.node.sdo[field.index][field.subindex].raw)
+				time.sleep(0.05)  # Small delay to ensure SDO read completes
 				if field.is_bool:
 					var: tk.IntVar = self.param_widgets[field.key]
 					var.set(1 if raw_value else 0)
@@ -235,6 +237,7 @@ class ControllerParameterGUI:
 			try:
 				self.node.sdo[field.index][field.subindex].raw = value
 				written += 1
+				time.sleep(0.05)  # Small delay to ensure SDO write completes
 			except Exception as exc:  # pylint: disable=broad-except
 				self.log(
 					f"Failed to write {field.label} (0x{field.index:04X}:{field.subindex:02X}): {exc}"
