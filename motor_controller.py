@@ -155,31 +155,20 @@ class ProfilePositionController:
 
         try:
             # --- 步骤 1: 禁用 PDO ---
-            # 通过设置 COB-ID 的最高位 (0x80000000) 来禁用 PDO。
-            # 这可以防止在配置更改期间，节点发送或接收不完整或无效的 PDO 数据。
-            # 0x1800 是 TPDO1 的通信参数对象索引。
+
             node.sdo[0x1800][1].raw = txpdo1 | 0x8000_0000
             # 0x1400 是 RPDO1 的通信参数对象索引。
             node.sdo[0x1400][1].raw = rxpdo1 | 0x8000_0000
 
             # --- 步骤 2: 设置传输类型 ---
-            # 配置 PDO 的传输方式（例如：同步、异步、事件驱动等）。
-            # 子索引 2 存储了传输类型。
             node.sdo[0x1800][2].raw = self.cfg.tpdo_transmission_type
             node.sdo[0x1400][2].raw = self.cfg.rpdo_transmission_type
 
             # --- 步骤 3: 清除旧的 PDO 映射 ---
-            # 在设置新映射之前，必须先清空现有的映射。
-            # 0x1A00 是 TPDO1 的映射参数对象索引。
-            # 0x1600 是 RPDO1 的映射参数对象索引。
-            # 子索引 0 存储了映射的对象数量。将其设为 0 即可清空所有映射。
             node.sdo[0x1A00][0].raw = 0
             node.sdo[0x1600][0].raw = 0
 
             # --- 步骤 4: 配置 TPDO1 的新映射 ---
-            # 将需要从节点发送出去的数据对象映射到 TPDO1。
-            # 映射格式为 0xIIIISSLL (索引, 子索引, 长度)。
-            # 0x6041_0010: 映射状态字 (Status Word, 索引 0x6041, 子索引 0x00, 长度 16 bits)
             node.sdo[0x1A00][1].raw = 0x6041_0010
             # 0x6064_0020: 映射位置实际值 (Position Actual Value, 索引 0x6064, 子索引 0x00, 长度 32 bits)
             node.sdo[0x1A00][2].raw = 0x6064_0020
@@ -187,8 +176,6 @@ class ProfilePositionController:
             node.sdo[0x1A00][0].raw = 2
 
             # --- 步骤 5: 配置 RPDO1 的新映射 ---
-            # 将需要发送给节点的控制对象映射到 RPDO1。
-            # 0x6040_0010: 映射控制字 (Control Word, 索引 0x6040, 子索引 0x00, 长度 16 bits)
             node.sdo[0x1600][1].raw = 0x6040_0010
             # 0x607A_0020: 映射目标位置 (Target Position, 索引 0x607A, 子索引 0x00, 长度 32 bits)
             node.sdo[0x1600][2].raw = 0x607A_0020
@@ -196,15 +183,11 @@ class ProfilePositionController:
             node.sdo[0x1600][0].raw = 2
 
             # --- 步骤 6: 重新启用 PDO ---
-            # 配置完成后，清除 COB-ID 的最高位，重新启用 PDO。
-            # 节点现在将根据新的映射和传输类型来处理 PDO。
             node.sdo[0x1800][1].raw = txpdo1
             node.sdo[0x1400][1].raw = rxpdo1
             
             return True
         except Exception as exc:  # pragma: no cover - device specific
-            # 如果在上述任何 SDO 写入过程中发生错误（例如节点不响应、对象不存在等），
-            # 捕获异常并记录一条调试信息。
             log.debug(
                 "Node 0x%02X: PDO remap via SDO skipped (%s)",
                 node_id,
@@ -766,6 +749,14 @@ class ProfilePositionController:
     def set_target_angle(self, angle_deg: float, is_csp: bool=False) -> None:
         self.set_target_counts(self.angle_to_counts(angle_deg), is_csp=is_csp)
 
+    def set_target_angle_sdo(self, angle_deg: float) -> None:
+        """使用 SDO 方式下发目标位置"""
+        counts = self.angle_to_counts(angle_deg)
+        log.debug("Node 0x%02X: target angle %.3f deg (%d counts) via SDO", self.cfg.node_id, angle_deg, counts)
+        self.node.sdo[0x607A].raw = counts
+        self.node.sdo[0x6040].raw = 0x0F
+        self.node.sdo[0x6040].raw = 0x1F
+        
     def set_csp_target_with_feedforward(self,
         position_deg: float,
         velocity_feedforward_deg_s: float,
@@ -849,6 +840,7 @@ class ProfilePositionController:
             self._control_toggle = not self._control_toggle
 
     def set_target_velocity_counts(self, velocity_counts: int, *, halt: bool = False, is_csv: bool = False) -> None:
+        """设置目标速度，单位为编码器计数/秒"""
         log.debug("Node 0x%02X: target velocity %d", self.cfg.node_id, velocity_counts)
         control_value = 0x000F | (0x0100 if halt else 0x0000)
         try:
@@ -874,8 +866,17 @@ class ProfilePositionController:
             log.warning("使用 SDO 方式下发目标速度，性能较差，建议检查 PDO 配置")
 
     def set_target_velocity_deg_s(self, velocity_deg_s: float, *, halt: bool = False, is_csv: bool = False) -> None:
+        """设置目标速度，单位为度/秒，halt 表示是否急停"""
         velocity_counts = self.deg_per_s_to_counts(velocity_deg_s)
         self.set_target_velocity_counts(velocity_counts, halt=halt, is_csv=is_csv)
+
+    def set_target_velocity_deg_s_sdo(self, velocity_deg_s: float, *, halt: bool = False) -> None:
+        """使用 SDO 方式下发目标速度"""
+        velocity_counts = self.deg_per_s_to_counts(velocity_deg_s)
+        control_value = 0x000F | (0x0100 if halt else 0x0000)
+        log.debug("Node 0x%02X: target velocity %.3f deg/s (%d counts) via SDO", self.cfg.node_id, velocity_deg_s, velocity_counts)
+        self.node.sdo[0x60FF].raw = velocity_counts
+        self.node.sdo[0x6040].raw = control_value
 
     def set_target_torque(self, torque_value: int, *, halt: bool = False, is_cst: bool = False) -> None:
         if torque_value > 1000 or torque_value < -1000:
@@ -915,6 +916,20 @@ class ProfilePositionController:
                 self.node.sdo[0x6040].raw = control_value
             log.warning("使用 SDO 方式下发目标力矩，性能较差，建议检查 PDO 配置")
 
+    def set_target_torque_sdo(self, torque_value: int, *, halt: bool = False) -> None:
+        """使用 SDO 方式下发目标力矩"""
+        if torque_value > 1000 or torque_value < -1000:
+            log.warning(
+                "Node 0x%02X: 目标力矩 %d 超出推荐范围 (-1000, 1000)",
+                self.cfg.node_id,
+                torque_value,
+            )
+
+        control_value = 0x000F | (0x0100 if halt else 0x0000)
+        log.debug("Node 0x%02X: target torque %d via SDO", self.cfg.node_id, torque_value)
+        self.node.sdo[0x6071].raw = torque_value
+        self.node.sdo[0x6040].raw = control_value
+    
     def is_target_reached(self) -> bool:
         status = int(self.node.sdo[0x6041].raw)
         return bool(status & 0x0400)
@@ -923,6 +938,7 @@ class ProfilePositionController:
         pdo_error: Optional[Exception] = None
         try:
             value = int(self.node.tpdo[1]["Position actual value"].raw)
+            log.debug("Node 0x%02X: read position counts %d via PDO", self.cfg.node_id, value)
             self._last_position_counts = value
             return value
         except (KeyError, AttributeError, ObjectDictionaryError, ValueError) as exc:
@@ -951,10 +967,23 @@ class ProfilePositionController:
             "Failed to read position from PDO and no previous value is available."
         ) from pdo_error
 
+    def get_position_counts_sdo(self) -> int:
+        """通过 SDO 读取当前位置计数 (0x6064)。"""
+        try:
+            value = int(self.node.sdo[0x6064].raw)
+            log.debug("Node 0x%02X: read position counts %d via SDO", self.cfg.node_id, value)
+            self._last_position_counts = value
+            return value
+        except Exception as exc:
+            raise ValueError(
+                f"Node 0x{self.cfg.node_id:02X}: failed to read position via SDO"
+            ) from exc
+
     def get_velocity_counts(self, *, allow_sdo_fallback: bool = True) -> int:
         pdo_error: Optional[Exception] = None
         try:
             value = int(self.node.tpdo[1]["Velocity actual value"].raw)
+            log.debug("Node 0x%02X: read velocity counts %d via PDO", self.cfg.node_id, value)
             self._last_velocity_counts = value
             return value
         except (KeyError, AttributeError, ObjectDictionaryError, ValueError) as exc:
@@ -983,6 +1012,18 @@ class ProfilePositionController:
             "Failed to read velocity from PDO and no previous value is available."
         ) from pdo_error
 
+    def get_velocity_counts_sdo(self) -> int:
+        """通过 SDO 读取当前速度计数 (0x606C)。"""
+        try:
+            value = int(self.node.sdo[0x606C].raw)
+            log.debug("Node 0x%02X: read velocity counts %d via SDO", self.cfg.node_id, value)
+            self._last_velocity_counts = value
+            return value
+        except Exception as exc:
+            raise ValueError(
+                f"Node 0x{self.cfg.node_id:02X}: failed to read velocity via SDO"
+            ) from exc
+
     def get_velocity_deg_s(self, *, allow_sdo_fallback: bool = True) -> float:
         velocity_counts = self.get_velocity_counts(allow_sdo_fallback=allow_sdo_fallback)
         return self.counts_to_deg_per_s(velocity_counts)
@@ -991,7 +1032,17 @@ class ProfilePositionController:
         counts = self.get_position_counts(allow_sdo_fallback=allow_sdo_fallback)
         return self.counts_to_angle(counts)
 
-    def get_actual_torque(self) -> int:
+    def get_position_angle_sdo(self) -> float:
+        """通过 SDO 读取当前位置角度。"""
+        counts = self.get_position_counts_sdo()
+        return self.counts_to_angle(counts)
+
+    def get_velocity_deg_s_sdo(self) -> float:
+        """通过 SDO 读取当前速度，单位为度/秒。"""
+        velocity_counts = self.get_velocity_counts_sdo()
+        return self.counts_to_deg_per_s(velocity_counts)
+
+    def get_actual_torque_sdo(self) -> int:
         """通过 SDO 读取当前实际力矩 (0x6077)。"""
         try:
             return int(self.node.sdo[0x6077].raw)
@@ -999,6 +1050,13 @@ class ProfilePositionController:
             raise ValueError(
                 f"Node 0x{self.cfg.node_id:02X}: failed to read actual torque via SDO"
             ) from exc
+
+    def get_motor_rated_torque(self, *, raw: bool = False) -> float | int:
+        """读取额定扭矩 (0x6076)，默认单位 Nm。"""
+        value = int(self.node.sdo[0x6076].raw)
+        if raw:
+            return value
+        return value / 1000.0
 
     def shutdown(self) -> None:
         log.info("Node 0x%02X: shutdown", self.cfg.node_id)
@@ -1012,8 +1070,8 @@ class ProfilePositionController:
                     log.exception("Node 0x%02X: failed to stop SYNC", self.cfg.node_id)
 
     # ---------------- 模式切换工具 -----------------
-    def switch_to_profile_velocity_mode(self) -> None:
-        """从当前模式切换到 CiA-402 轮廓速度模式（PV）。"""
+    def switch_to_profile_velocity_mode(self, pdo_mapping: bool=True) -> None:
+        """从当前模式切换到 CiA-402 轮廓速度模式（PV）。pdo_mapping 指示是否进行 PDO 重映射。"""
         log.info("Node 0x%02X: switching to PV mode", self.cfg.node_id)
 
         try:
@@ -1024,13 +1082,18 @@ class ProfilePositionController:
                 self.cfg.node_id,
             )
             raise
-
-        if not self.try_remap_pdos_for_velocity_mode():
-            log.warning(
-                "Node 0x%02X: PV PDO remap skipped, keeping previous mapping",
+        if pdo_mapping:
+            if not self.try_remap_pdos_for_velocity_mode():
+                log.warning(
+                    "Node 0x%02X: PV PDO remap skipped, keeping previous mapping",
+                    self.cfg.node_id,
+                )
+                raise RuntimeError("PV 模式 PDO 重映射失败")
+        else:
+            log.info(
+                "Node 0x%02X: PV PDO remap skipped as per caller request",
                 self.cfg.node_id,
             )
-            raise RuntimeError("PV 模式 PDO 重映射失败")
 
         try:
             self.node.sdo[0x60FF].raw = 0
@@ -1071,8 +1134,8 @@ class ProfilePositionController:
             )
             raise RuntimeError("PV 模式启用失败") from exc
 
-    def switch_to_profile_torque_mode(self, initial_torque: int) -> None:
-        """切换到 CiA-402 轮廓扭矩模式（PT），并预载入初始扭矩。"""
+    def switch_to_profile_torque_mode(self, initial_torque: int, pdo_mapping: bool=True) -> None:
+        """切换到 CiA-402 轮廓扭矩模式（PT），并预载入初始扭矩。pdo_mapping 指示是否进行 PDO 重映射。"""
         log.info("Node 0x%02X: switching to PT mode", self.cfg.node_id)
 
         if initial_torque is None:
@@ -1086,13 +1149,18 @@ class ProfilePositionController:
                 self.cfg.node_id,
             )
             raise
-
-        if not self.try_remap_pdos_for_torque_mode():
-            log.warning(
-                "Node 0x%02X: PT PDO remap skipped, keeping previous mapping",
+        if pdo_mapping:
+            if not self.try_remap_pdos_for_torque_mode():
+                log.warning(
+                    "Node 0x%02X: PT PDO remap skipped, keeping previous mapping",
+                    self.cfg.node_id,
+                )
+                raise RuntimeError("PT 模式 PDO 重映射失败")
+        else:
+            log.info(
+                "Node 0x%02X: PT PDO remap skipped as per caller request",
                 self.cfg.node_id,
             )
-            raise RuntimeError("PT 模式 PDO 重映射失败")
 
         try:
             self.node.sdo[0x6071].raw = initial_torque
@@ -1197,6 +1265,7 @@ class ProfilePositionController:
                 "Node 0x%02X: CSV PDO remap skipped, keeping previous mapping",
                 self.cfg.node_id,
             )
+            raise RuntimeError("CSV 模式 PDO 重映射失败")
         time.sleep(0.3)
         try:
             self.node.sdo[0x60FF].raw = 0
@@ -1283,6 +1352,7 @@ class ProfilePositionController:
                 "Node 0x%02X: CST PDO remap skipped, keeping previous mapping",
                 self.cfg.node_id,
             )
+            raise RuntimeError("CST 模式 PDO 重映射失败")
 
         time.sleep(0.3)
 
@@ -1372,6 +1442,14 @@ class ProfilePositionController:
             log.exception("Node 0x%02X: failed to disable operation before CSP", self.cfg.node_id)
             raise RuntimeError("切换 CSP 前停机失败") from exc
 
+        if not self._try_remap_pdos_via_sdo():
+            log.warning(
+                "Node 0x%02X: CSP PDO remap skipped, keeping previous mapping",
+                self.cfg.node_id,
+            )
+            raise RuntimeError("CSP 模式 PDO 重映射失败")
+        time.sleep(0.3)
+
         try:
             actual_counts = int(self.node.sdo[0x6064].raw)
             self.node.sdo[0x607A].raw = actual_counts
@@ -1395,8 +1473,8 @@ class ProfilePositionController:
             log.exception("Node 0x%02X: failed to re-enable operation in CSP", self.cfg.node_id)
             raise RuntimeError("CSP 模式启用失败") from exc
 
-    def switch_to_profile_position_mode(self) -> None:
-        """从 CSP 切回 CiA-402 轮廓位置模式（PP）。"""
+    def switch_to_profile_position_mode(self, pdo_mapping: bool=True) -> None:
+        """切回 CiA-402 轮廓位置模式（PP）。pdo_mapping 指示是否进行 PDO 重映射。"""
         log.info("Node 0x%02X: switching back to PP mode", self.cfg.node_id)
 
         try:
@@ -1404,7 +1482,18 @@ class ProfilePositionController:
         except Exception:
             log.exception("Node 0x%02X: failed to disable operation before PP switch", self.cfg.node_id)
             raise
-
+        if pdo_mapping:
+            if not self.try_remap_pdos_for_position_mode():
+                log.warning(
+                    "Node 0x%02X: PP PDO remap skipped, keeping previous mapping",
+                    self.cfg.node_id,
+                )
+                raise RuntimeError("PP 模式 PDO 重映射失败")
+        else:
+            log.info(
+                "Node 0x%02X: PP PDO remap skipped as per caller request",
+                self.cfg.node_id,
+            )
         try:
             actual_counts = int(self.node.sdo[0x6064].raw)
             self.node.sdo[0x607A].raw = actual_counts
