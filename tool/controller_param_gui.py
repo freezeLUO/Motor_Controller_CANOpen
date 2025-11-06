@@ -148,7 +148,8 @@ class ControllerParameterGUI:
 		try:
 			network = canopen.Network()
 			network.connect(bustype=bustype, channel=channel, bitrate=bitrate)
-			node = network.add_node(node_id, eds_path)
+			# canopen 需要字符串路径，这里显式转换，避免 WindowsPath 缺少 rfind 导致的异常
+			node = network.add_node(node_id, str(eds_path))
 			node.load_configuration()
 		except can.CanInterfaceNotImplementedError as exc:
 			messagebox.showerror("CAN Error", f"Interface not available: {exc}")

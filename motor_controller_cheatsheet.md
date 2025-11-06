@@ -26,9 +26,9 @@ from motor_controller import PPConfig, ProfilePositionController, SyncProducerHe
 - `switch_to_profile_position_mode()` – 回到 PP 模式并预载上一次位置。
 - `switch_to_profile_velocity_mode()` – 重映射速度 PDO、写 0 速度、切换到 PV。
 - `switch_to_profile_torque_mode(initial_torque)` – 重映射扭矩 PDO、预载初始扭矩。
-- `switch_to_cyclic_synchronous_position(sync_period_ms=None)` – 配置插补周期、预载目标、进入 CSP。
-- `switch_to_cyclic_synchronous_velocity(sync_period_ms=None)` – 配置 CSV 所需周期并重映射速度 PDO。
-- `switch_to_cyclic_synchronous_torque(sync_period_ms=None, initial_torque=0)` – 配置 CST，预载扭矩。
+- `switch_to_cyclic_synchronous_position()` – 预载目标、进入 CSP。
+- `switch_to_cyclic_synchronous_velocity()` – 配置 CSV 所需周期并重映射速度 PDO。
+- `switch_to_cyclic_synchronous_torque(initial_torque=0)` – 配置 CST，预载扭矩。
 
 ## 运动下发
 

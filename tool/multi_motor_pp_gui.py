@@ -24,7 +24,7 @@ from motor_controller import PPConfig, ProfilePositionController, SyncProducerHe
 
 log = logging.getLogger(__name__)
 # 设置logging级别和格式
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 @dataclass(slots=True)
 class BusConfig:
@@ -206,7 +206,7 @@ class PPMotorView(BaseMotorView):
 class PTMotorView(BaseMotorView):
     def __init__(self, master: tk.Misc, node_id: int) -> None:
         super().__init__(master, node_id)
-        self.torque_vars = [tk.StringVar(master, value="200"), tk.StringVar(master, value="-200")]
+        self.torque_vars = [tk.StringVar(master, value="500"), tk.StringVar(master, value="-500")]
         self.torque_buttons: List[tk.Button] = []
         self.torque_entries: List[ttk.Entry] = []
         self.active_output: Optional[int] = None
@@ -603,7 +603,7 @@ class MultiMotorPPApp:
         with self._positions_lock:
             self._positions[handle.node_id] = current
         self._update_connect_all_state()
-        if handle.node_id == 0x05:
+        if handle.node_id == 0x04:
             self._try_enable_sync_producer()
         return True
 

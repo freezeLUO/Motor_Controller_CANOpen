@@ -1,4 +1,6 @@
 __pycache__/
 *.pyc
 my_test.py
+my_test_v2.py
 my_test/
+.todo.md

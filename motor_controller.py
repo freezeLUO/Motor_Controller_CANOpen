@@ -1,4 +1,4 @@
-﻿"""基于 python-canopen 的轮廓位置模式（PP）辅助库。
+"""基于 python-canopen 的轮廓位置模式（PP）辅助库。
 
 封装 PP 模式常用的节点初始化、状态机控制、轮廓参数设置、目标位置下发以及
 位置读取等操作，方便在上层应用中直接复用，不包含监控线程或交互逻辑。
@@ -13,6 +13,11 @@ from typing import Optional, cast
 
 import canopen  # type: ignore
 from canopen.objectdictionary import ObjectDictionaryError  # type: ignore
+try:  # python-canopen >= 2.x
+    from canopen.sdo.exceptions import SdoAbortedError  # type: ignore
+except Exception:  # pragma: no cover - compatibility fallback
+    class SdoAbortedError(Exception):  # type: ignore
+        pass
 
 log = logging.getLogger(__name__)
 # logging.basicConfig(level=logging.INFO)
@@ -51,7 +56,16 @@ class ProfilePositionController:
         self.network = network
         self.cfg = config
         self.node = self.network.add_node(self.cfg.node_id, self.cfg.eds_path)
-        self.node.load_configuration()
+        # 新版 python-canopen 会按 EDS 默认值写大量对象，部分设备会返回 0x06090030（参数越界）。
+        # 本库会自行按需通过 SDO/PDO 配置所需对象，因此这里忽略 EDS 默认写入失败，继续初始化。
+        try:
+            self.node.load_configuration()
+        except SdoAbortedError as exc:
+            log.warning(
+                "Node 0x%02X: skip applying EDS defaults due to SDO abort (%s)",
+                self.cfg.node_id,
+                exc,
+            )
         self._last_enable_ts = 0.0
         self._last_disable_ts = 0.0
         self._last_position_counts: Optional[int] = None
@@ -813,13 +827,14 @@ class ProfilePositionController:
             rpdo_pos.transmit()
 
             try:
-                velocity_var = rpdo_ff["Velocity feed forward value"]
-            except KeyError:
                 velocity_var = rpdo_ff.get_variable(0x60B1, 0)
-            try:
-                torque_var = rpdo_ff["Torque feed forward value"]
             except KeyError:
+                velocity_var = rpdo_ff["Velocity feed forward value"]
+            try:
                 torque_var = rpdo_ff.get_variable(0x60B2, 0)
+            except KeyError:        
+                torque_var = rpdo_ff["Torque feed forward value"]
+
 
             velocity_var.raw = velocity_feedforward
             torque_var.raw = torque_feedforward
@@ -858,7 +873,7 @@ class ProfilePositionController:
             if is_csv == False:
                 control_var.raw = control_value
             else:
-                control_var.raw = 15  # 用于 CSV 模式下发控制字，避免冲突
+                control_var.raw = control_value  # CSV 模式下也带上 halt 位等控制位
             rpdo1.transmit()
         except (KeyError, AttributeError, ValueError):
             self.node.sdo[0x60FF].raw = velocity_counts
@@ -1223,9 +1238,7 @@ class ProfilePositionController:
                 exc,
             )
 
-    def switch_to_cyclic_synchronous_velocity(
-        self, sync_period_ms: Optional[float] = 20
-    ) -> None:
+    def switch_to_cyclic_synchronous_velocity(self) -> None:
         """切换到 CiA-402 周期同步速度模式（CSV）。"""
         log.info("Node 0x%02X: switching to CSV mode", self.cfg.node_id)
 
@@ -1310,7 +1323,6 @@ class ProfilePositionController:
 
     def switch_to_cyclic_synchronous_torque(
         self,
-        sync_period_ms: Optional[float] = 20,
         initial_torque: int = 0,
     ) -> None:
         """切换到 CiA-402 周期同步扭矩模式（CST），并预载入初始扭矩。"""
@@ -1411,7 +1423,7 @@ class ProfilePositionController:
                 exc,
             )
 
-    def switch_to_cyclic_synchronous_position(self, sync_period_ms: Optional[float] = 20) -> None:
+    def switch_to_cyclic_synchronous_position(self, feedforward_control: bool = False) -> None:
         # 切换到 CiA-402 周期同步位置模式（CSP）。
         log.info("Node 0x%02X: switching to CSP mode", self.cfg.node_id)
 
@@ -1441,14 +1453,22 @@ class ProfilePositionController:
         except Exception as exc:
             log.exception("Node 0x%02X: failed to disable operation before CSP", self.cfg.node_id)
             raise RuntimeError("切换 CSP 前停机失败") from exc
-
-        if not self._try_remap_pdos_via_sdo():
-            log.warning(
-                "Node 0x%02X: CSP PDO remap skipped, keeping previous mapping",
-                self.cfg.node_id,
-            )
-            raise RuntimeError("CSP 模式 PDO 重映射失败")
-        time.sleep(0.3)
+        # 根据是否启用前馈控制选择不同的 PDO 重映射
+        if feedforward_control == True:
+            if not self.try_remap_pdos_for_csp_with_feedforward():
+                log.warning(
+                    "Node 0x%02X: CSP (with feedforward) PDO remap skipped, keeping previous mapping",
+                    self.cfg.node_id,
+                )
+                raise RuntimeError("CSP (带前馈) 模式 PDO 重映射失败")
+        else:
+            if not self._try_remap_pdos_via_sdo():
+                log.warning(
+                    "Node 0x%02X: CSP PDO remap skipped, keeping previous mapping",
+                    self.cfg.node_id,
+                )
+                raise RuntimeError("CSP 模式 PDO 重映射失败")
+            time.sleep(0.3)
 
         try:
             actual_counts = int(self.node.sdo[0x6064].raw)
@@ -1483,7 +1503,7 @@ class ProfilePositionController:
             log.exception("Node 0x%02X: failed to disable operation before PP switch", self.cfg.node_id)
             raise
         if pdo_mapping:
-            if not self.try_remap_pdos_for_position_mode():
+            if not self._try_remap_pdos_via_sdo():
                 log.warning(
                     "Node 0x%02X: PP PDO remap skipped, keeping previous mapping",
                     self.cfg.node_id,

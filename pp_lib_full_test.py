@@ -321,11 +321,13 @@ def main() -> None:
 
         controller.clear_faults()
         controller.enable_operation()
+        time.sleep(1.0)
+        controller.switch_to_profile_position_mode()
         # 测试PP模式
-        controller.set_target_angle(20.0)
+        controller.set_target_angle_sdo(20.0)
         wait_for_target(controller, 20.0, TARGET_REACHED_TIMEOUT_S)
         time.sleep(1.0)
-        controller.set_target_angle(0.0)
+        controller.set_target_angle(0.0,is_csp=False)
         time.sleep(3.0)
         wait_for_target(controller, 0.0, TARGET_REACHED_TIMEOUT_S)
         time.sleep(1.0)
@@ -347,8 +349,8 @@ def main() -> None:
         # controller.switch_to_profile_position_mode()
         # time.sleep(1.0)
 
-        # # 测试CSP模式
-        # controller.switch_to_cyclic_synchronous_position(sync_period_ms=SYNC_PERIOD_MS)
+        # 测试CSP模式
+        # controller.switch_to_cyclic_synchronous_position()
         # time.sleep(1.0)
         # trajectory = plan_quintic_trajectory()
         # timestamps, planned, actual = run_csp_trajectory(network, controller, trajectory)

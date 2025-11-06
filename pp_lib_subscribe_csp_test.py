@@ -52,11 +52,9 @@ def run_csp_trajectory_via_subscribe(
     sample_index = 0
     callback_error: Optional[BaseException] = None
 
-    def handle_sync(msg: can.Message) -> None:
+    def handle_sync(can_id: int, data: bytes, timestamp: float) -> None:
         nonlocal sample_index, callback_error
         if done.is_set():
-            return
-        if msg.arbitration_id != 0x80:
             return
 
         with callback_lock:
@@ -70,10 +68,11 @@ def run_csp_trajectory_via_subscribe(
                 target_angle = trajectory[sample_index]
                 sample_index += 1
 
-                controller.set_target_angle(target_angle)
+                controller.set_target_angle(target_angle,is_csp=True)
                 planned.append(target_angle)
 
                 value = controller.get_position_angle(allow_sdo_fallback=False)
+                log.debug(f"读取实际位置: {value:.2f}°")
                 actual.append(value)
 
                 timestamps.append(time.perf_counter() - start_time)
@@ -88,7 +87,8 @@ def run_csp_trajectory_via_subscribe(
                 log.exception("处理 SYNC 回调时出错")
                 done.set()
 
-    subscription = network.subscribe(handle_sync, 0x80)
+    # 注意: python-canopen 的签名为 subscribe(can_id, callback)
+    subscription = network.subscribe(0x80, handle_sync)
 
     try:
         sync_period = 1.0 / SYNC_FREQUENCY_HZ
@@ -158,10 +158,10 @@ def main() -> None:
 
         controller.set_target_angle(0.0)
         time.sleep(3.0)
-        wait_for_target(controller, 0.0, TARGET_REACHED_TIMEOUT_S)
-        time.sleep(1.0)
+        # wait_for_target(controller, 0.0, TARGET_REACHED_TIMEOUT_S)
+        # time.sleep(1.0)
 
-        controller.switch_to_cyclic_synchronous_position(sync_period_ms=SYNC_PERIOD_MS)
+        controller.switch_to_cyclic_synchronous_position()
         time.sleep(1.0)
 
         trajectory = plan_quintic_trajectory()
