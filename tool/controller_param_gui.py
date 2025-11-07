@@ -150,7 +150,11 @@ class ControllerParameterGUI:
 			network.connect(bustype=bustype, channel=channel, bitrate=bitrate)
 			# canopen 需要字符串路径，这里显式转换，避免 WindowsPath 缺少 rfind 导致的异常
 			node = network.add_node(node_id, str(eds_path))
-			node.load_configuration()
+			# Ignore load_configuration exceptions so connection is still usable for SDO
+			try:
+				node.load_configuration()
+			except Exception as exc:  # pylint: disable=broad-except
+				self.log(f"Warning: load_configuration failed, continuing: {exc}")
 		except can.CanInterfaceNotImplementedError as exc:
 			messagebox.showerror("CAN Error", f"Interface not available: {exc}")
 			return
@@ -165,6 +169,14 @@ class ControllerParameterGUI:
 		self.network = network
 		self.node = node
 		self.log(f"Connected to node 0x{node_id:02X} on {bustype}:{channel}")
+
+		# Set NMT to PRE-OPERATIONAL to ensure SDO access
+		try:
+			self.node.nmt.state = "PRE-OPERATIONAL"
+			time.sleep(0.1)
+			self.log("Set NMT state to PRE-OPERATIONAL")
+		except Exception as exc:  # pylint: disable=broad-except
+			self.log(f"NMT PRE-OP warning: {exc}")
 
 	def disconnect(self) -> None:
 		if self.network is None:

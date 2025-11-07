@@ -624,6 +624,117 @@ class ProfilePositionController:
         self._write_controlword(0x02)
         self._wait_status(0x6F, 0x07)
 
+    def clear_halt(self) -> None:
+        """清除 CiA-402 控制字 0x6040 的 Halt 位（bit8），仅使用 SDO。
+
+        读取当前 Controlword，清除 bit8 后写回；若读取失败，兜底写入 0x000F（常见的
+        "Enable Operation" 且未置 Halt 的控制字）。不修改其他控制位以避免破坏当前状态。
+        """
+        log.info("Node 0x%02X: clear HALT (bit8) via SDO", self.cfg.node_id)
+        try:
+            current = int(self.node.sdo[0x6040].raw)
+            new_value = current & (~0x0100 & 0xFFFF)
+            # 即便值未变化，仍写一次，确保设备接收到控制字
+            self.node.sdo[0x6040].raw = new_value
+        except Exception:
+            # 回退：尝试写入一个典型的“已使能且无 HALT”的控制字
+            try:
+                self.node.sdo[0x6040].raw = 0x000F
+            except Exception:
+                log.exception("Node 0x%02X: failed to clear HALT via SDO", self.cfg.node_id)
+
+    def recover(
+        self,
+        *,
+        use_reset_node: bool = False,
+        target_mode: str = "PP",
+        pdo_mapping: bool = True,
+        ensure_sync: Optional[float] = None,
+    ) -> None:
+        """一键恢复：通过 NMT 复位 + 模式重建 + 清故障 + 重新上电使能。
+
+        步骤：
+        1) NMT Reset（通信或整节点）→ 等待 boot-up → PRE-OPERATIONAL
+        2) （可选）PDO 重新映射；预装当前实际位置到目标位置；设置目标模式（PP/CSP）
+        3) 清故障 → Enable Operation；（可选）启动 SYNC；切到 OPERATIONAL
+
+        Args:
+            use_reset_node: True 则执行 Reset Node（更接近掉电重启），False 为 Reset Communication。
+            target_mode: "PP" 或 "CSP"。
+            pdo_mapping: 是否尝试通过 SDO 进行 PDO 重映射。
+            ensure_sync: 若给出（秒），在恢复后启动 SYNC（用于同步 PDO 的场景）。
+        """
+        node = self.node
+        nid = self.cfg.node_id
+        log.info(
+            "Node 0x%02X: recovery start (reset=%s, mode=%s, pdo=%s)",
+            nid,
+            "node" if use_reset_node else "comm",
+            target_mode,
+            pdo_mapping,
+        )
+
+        # 1) NMT Reset + boot-up → PRE-OPERATIONAL
+        try:
+            if use_reset_node:
+                node.nmt.state = 'RESET'
+            else:
+                node.nmt.state = 'RESET COMMUNICATION'
+            try:
+                node.nmt.wait_for_bootup(timeout=5.0)
+            except Exception:
+                log.warning("Node 0x%02X: boot-up wait skipped/timeout", nid)
+            node.nmt.state = "PRE-OPERATIONAL"
+            time.sleep(0.2)
+        except Exception:
+            log.exception("Node 0x%02X: NMT reset stage failed", nid)
+            raise
+
+        # 2) 模式/映射/预装目标
+        mode = (target_mode or "PP").strip().upper()
+        try:
+            if pdo_mapping:
+                try:
+                    if not self._try_remap_pdos_via_sdo():
+                        log.warning("Node 0x%02X: PDO remap skipped during recovery", nid)
+                except Exception:
+                    log.warning("Node 0x%02X: PDO remap raised during recovery", nid)
+
+            # 预装当前位置为目标，避免跳变
+            try:
+                actual = int(node.sdo[0x6064].raw)
+                node.sdo[0x607A].raw = actual
+            except Exception:
+                log.debug("Node 0x%02X: preload target position skipped", nid)
+
+            if mode == "CSP":
+                node.sdo[0x6060].raw = 0x08
+                self._wait_mode(0x08)
+            else:
+                node.sdo[0x6060].raw = 0x01
+                self._wait_mode(0x01)
+        except Exception:
+            log.exception("Node 0x%02X: mode/setup stage failed", nid)
+            raise
+
+        # 3) 清故障 + 上电使能 + OPERATIONAL
+        try:
+            self.clear_faults()
+            time.sleep(0.3)
+            self.enable_operation()
+            if ensure_sync is not None:
+                try:
+                    self.configure_sync(float(ensure_sync))
+                except Exception:
+                    log.warning("Node 0x%02X: ensure SYNC failed/ignored", nid)
+            node.nmt.state = "OPERATIONAL"
+            time.sleep(0.2)
+        except Exception:
+            log.exception("Node 0x%02X: enable/operational stage failed", nid)
+            raise
+
+        log.info("Node 0x%02X: recovery completed", nid)
+
     def _write_controlword(self, value: int) -> None:
         try:
             rpdo1 = self.node.rpdo[1]
@@ -826,14 +937,14 @@ class ProfilePositionController:
             control_var.raw = control_value
             rpdo_pos.transmit()
 
-            try:
-                velocity_var = rpdo_ff.get_variable(0x60B1, 0)
+            try:  
+                velocity_var = rpdo_ff["Velocity offset"]
             except KeyError:
-                velocity_var = rpdo_ff["Velocity feed forward value"]
-            try:
-                torque_var = rpdo_ff.get_variable(0x60B2, 0)
+                velocity_var = rpdo_ff.get_variable(0x60B1, 0)
+            try:   
+                torque_var = rpdo_ff["Torque offset"]
             except KeyError:        
-                torque_var = rpdo_ff["Torque feed forward value"]
+                torque_var = rpdo_ff.get_variable(0x60B2, 0)
 
 
             velocity_var.raw = velocity_feedforward
