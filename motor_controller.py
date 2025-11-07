@@ -924,6 +924,19 @@ class ProfilePositionController:
             rpdo_pos = self.node.rpdo[1]
             rpdo_ff = self.node.rpdo[2]
 
+            try:  
+                velocity_var = rpdo_ff["Velocity offset"]
+            except KeyError:
+                velocity_var = rpdo_ff.get_variable(0x60B1, 0)
+            try:   
+                torque_var = rpdo_ff["Torque offset"]
+            except KeyError:        
+                torque_var = rpdo_ff.get_variable(0x60B2, 0)
+
+            velocity_var.raw = velocity_feedforward
+            torque_var.raw = torque_feedforward
+            rpdo_ff.transmit()
+
             try:
                 position_var = rpdo_pos["Target Position"]
             except KeyError:
@@ -936,20 +949,6 @@ class ProfilePositionController:
             position_var.raw = position_counts
             control_var.raw = control_value
             rpdo_pos.transmit()
-
-            try:  
-                velocity_var = rpdo_ff["Velocity offset"]
-            except KeyError:
-                velocity_var = rpdo_ff.get_variable(0x60B1, 0)
-            try:   
-                torque_var = rpdo_ff["Torque offset"]
-            except KeyError:        
-                torque_var = rpdo_ff.get_variable(0x60B2, 0)
-
-
-            velocity_var.raw = velocity_feedforward
-            torque_var.raw = torque_feedforward
-            rpdo_ff.transmit()
 
             self._control_toggle = not self._control_toggle
         except (KeyError, AttributeError, ValueError) as exc:
