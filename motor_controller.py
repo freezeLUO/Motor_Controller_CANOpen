@@ -85,6 +85,47 @@ class ProfilePositionController:
     def counts_to_deg_per_s(self, counts: int) -> float:
         return counts / self.cfg.encoder_resolution * 360.0
 
+    # ---------------- 状态/错误读取接口 -----------------
+    def get_statusword(self) -> int:
+        """读取状态字 (0x6041)。
+
+        优先使用已映射的 TPDO1 中的 "Statusword" 变量获取最新值；如果由于
+        未映射/访问异常导致失败，则回退使用 SDO 读取 0x6041。
+        返回值为 16 位整型原始状态字。
+        """
+        try:
+            # 快速路径：通过 TPDO 缓存变量（如果映射成功并且已 read()）
+            tpdo1 = self.node.tpdo[1]
+            try:
+                var = tpdo1["Statusword"]
+            except KeyError:
+                # 有些固件使用其它命名或未映射；抛出让外层捕获
+                raise
+            # python-canopen 的 TPDO 变量通常在接收回调里更新 raw；这里读取其 raw
+            value = int(var.raw)
+            return value & 0xFFFF
+        except Exception:
+            # 回退 SDO 方式（更慢）
+            try:
+                return int(self.node.sdo[0x6041].raw) & 0xFFFF
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Node 0x{self.cfg.node_id:02X}: failed to read Statusword via PDO/SDO"
+                ) from exc
+
+    def get_error_code(self) -> int:
+        """读取错误字 (0x603F) 仅通过 SDO。
+
+        返回 16 位错误代码；若读取失败抛出 RuntimeError。注意：某些设备会在无故障时
+        返回 0 或特定保留值，需结合厂商手册判断含义。
+        """
+        try:
+            return int(self.node.sdo[0x603F].raw) & 0xFFFF
+        except Exception as exc:
+            raise RuntimeError(
+                f"Node 0x{self.cfg.node_id:02X}: failed to read Error code (0x603F) via SDO"
+            ) from exc
+
     # ---------------- 驱动初始化流程 -----------------
     def initialise(self) -> None:
         log.info("Node 0x%02X: initialising PP mode", self.cfg.node_id)

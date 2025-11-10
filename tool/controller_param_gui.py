@@ -12,6 +12,11 @@ from typing import Any, Dict, Optional
 import can  
 import canopen  
 import time
+try:  # python-canopen >= 2.x
+    from canopen.sdo.exceptions import SdoAbortedError  # type: ignore
+except Exception:  # pragma: no cover - compatibility fallback
+    class SdoAbortedError(Exception):  # type: ignore
+        pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,17 +207,48 @@ class ControllerParameterGUI:
 
 		assert self.node is not None
 
+		def _upload_as_int(index: int, subindex: int, is_bool: bool) -> int:
+			"""Try reading via raw SDO upload without relying on EDS.
+
+			Returns an integer parsed from little-endian bytes. Booleans are coerced to 0/1.
+			Raises the original exception on failure for outer handler to log.
+			"""
+			assert self.node is not None
+			# Perform raw SDO upload. This does not require the object to exist in the local EDS.
+			data = self.node.sdo.upload(index, subindex)
+			# data is a bytes-like object; parse little-endian as unsigned integer
+			value = int.from_bytes(bytes(data), byteorder="little", signed=False)
+			if is_bool:
+				return 1 if (value & 0x01) else 0
+			return value
+
 		for field in PARAMETER_FIELDS:
 			try:
-				raw_value = int(self.node.sdo[field.index][field.subindex].raw)
-				time.sleep(0.05)  # Small delay to ensure SDO read completes
+				# First try typed access via EDS (fast path)
+				try:
+					value = int(self.node.sdo[field.index][field.subindex].raw)
+					source = "EDS"
+				except KeyError:
+					# Not in local EDS -> fall back to raw SDO upload
+					value = _upload_as_int(field.index, field.subindex, field.is_bool)
+					source = "RAW"
+				except SdoAbortedError:
+					# Device rejected typed access (e.g., 0x06020000). Try raw upload anyway.
+					value = _upload_as_int(field.index, field.subindex, field.is_bool)
+					source = "RAW"
+
+				time.sleep(0.02)  # Tiny delay to avoid back-to-back SDOs
 				if field.is_bool:
 					var: tk.IntVar = self.param_widgets[field.key]
-					var.set(1 if raw_value else 0)
+					var.set(1 if value else 0)
 				else:
 					entry: tk.Entry = self.param_widgets[field.key]
 					entry.delete(0, tk.END)
-					entry.insert(0, str(raw_value))
+					entry.insert(0, str(value))
+				# Optional: note the source once for visibility
+				self.log(
+					f"Read {field.label} via {source} (0x{field.index:04X}:{field.subindex:02X}) = {value}"
+				)
 			except Exception as exc:  # pylint: disable=broad-except
 				self.log(
 					f"Failed to read {field.label} (0x{field.index:04X}:{field.subindex:02X}): {exc}"

@@ -541,15 +541,15 @@ class MultiMotorPPApp:
 
         cfg = self._build_pp_config(handle.node_id)
         controller = ProfilePositionController(self.network, cfg)
-        if isinstance(handle, PTMotorView):
-            controller._configure_pdus = types.MethodType(lambda _self: None, controller)  # type: ignore[attr-defined]
+        # if isinstance(handle, PTMotorView):
+        #     controller._configure_pdus = types.MethodType(lambda _self: None, controller)  # type: ignore[attr-defined]
 
         try:
             controller.initialise()
             controller.clear_faults()
             controller.enable_operation()
             if isinstance(handle, PTMotorView):
-                controller.switch_to_profile_torque_mode(initial_torque=0, pdo_mapping=False)
+                controller.switch_to_profile_torque_mode(initial_torque=0, pdo_mapping=True)
         except Exception as exc:
             try:
                 controller.shutdown()
