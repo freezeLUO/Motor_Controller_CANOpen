@@ -3,6 +3,7 @@
 基于 `python-canopen` 的轻量封装，面向 ZeroErr / CiA-402 兼容驱动，覆盖 Profile Position (PP)、Profile Velocity (PV)、Profile Torque (PT) 以及 CSP / CSV / CST 等同步模式的初始化、PDO 映射与高层指令封装。
 
 **API速查**：[motor_controller_cheatsheet](motor_controller_cheatsheet.md)
+**使用示例**：[full_test](full_test.py)
 
 ## 主要特性
 
