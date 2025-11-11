@@ -812,18 +812,32 @@ class ProfilePositionController:
     def read_control_parameters(self) -> ControllerParameters:
         node = self.node
 
-        def _read(index: int, subindex: int) -> int:
-            return int(node.sdo[index][subindex].raw)
+        def _try_read_int(index: int, subindex: int) -> int | None:
+            try:
+                return int(node.sdo[index][subindex].raw)
+            except (SdoAbortedError, ObjectDictionaryError, KeyError, ValueError) as exc:
+                log.warning(
+                    "Node 0x%02X: 读取 SDO %04X:%02X 失败，跳过。原因: %s",
+                    self.cfg.node_id,
+                    index,
+                    subindex,
+                    exc,
+                )
+                return None
+
+        def _try_read_bool(index: int, subindex: int) -> bool | None:
+            v = _try_read_int(index, subindex)
+            return None if v is None else bool(v)
 
         params = ControllerParameters(
-            position_kp=_read(0x2382, 0x01),
-            velocity_kp=_read(0x2381, 0x01),
-            velocity_ki=_read(0x2381, 0x02),
-            current_kp=_read(0x2380, 0x01),
-            current_ki=_read(0x2380, 0x02),
-            velocity_feedforward=_read(0x2382, 0x03),
-            integral_limit_ma=_read(0x3000, 0x00),
-            pid_switch=bool(_read(0x2383, 0x00)),
+            position_kp=_try_read_int(0x2382, 0x01),
+            velocity_kp=_try_read_int(0x2381, 0x01),
+            velocity_ki=_try_read_int(0x2381, 0x02),
+            current_kp=_try_read_int(0x2380, 0x01),
+            current_ki=_try_read_int(0x2380, 0x02),
+            velocity_feedforward=_try_read_int(0x2382, 0x03),
+            integral_limit_ma=_try_read_int(0x3000, 0x00),
+            pid_switch=_try_read_bool(0x2383, 0x00),
         )
         return params
 
@@ -892,8 +906,8 @@ class ProfilePositionController:
             except KeyError:
                 control_var = rpdo1.get_variable(0x6040, 0)
 
-            target_var.raw = counts
             if is_csp:
+                target_var.raw = counts
                 control_var.raw = 0x1F
                 rpdo1.transmit()
             else:
