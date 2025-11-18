@@ -1,6 +1,6 @@
-"""基于 python-canopen 的轮廓位置模式（PP）辅助库。
+"""基于 python-canopen 的电机控制辅助库。
 
-封装 PP 模式常用的节点初始化、状态机控制、轮廓参数设置、目标位置下发以及
+封装 PP、PV、PT、CSP、CSV、CST 模式常用的节点初始化、状态机控制、轮廓参数设置、目标位置下发以及
 位置读取等操作，方便在上层应用中直接复用，不包含监控线程或交互逻辑。
 """
 
@@ -29,9 +29,9 @@ class PPConfig:
     node_id: int
     eds_path: str = "ZeroErr Driver_V1.5.eds"
     encoder_resolution: int = 524_288
-    profile_velocity_deg_s: float = 30.0
-    profile_accel_deg_s2: float = 30.0
-    profile_decel_deg_s2: float = 30.0
+    profile_velocity_deg_s: float = 15.0
+    profile_accel_deg_s2: float = 15.0
+    profile_decel_deg_s2: float = 15.0
     sync_period_s: Optional[float] = None
     tpdo_transmission_type: int = 1
     rpdo_transmission_type: int = 1

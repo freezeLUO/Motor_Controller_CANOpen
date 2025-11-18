@@ -549,7 +549,7 @@ def main() -> None:
 
     controller = ProfilePositionController(
         network,
-        PPConfig(node_id=0x04, sync_period_s=None),
+        PPConfig(node_id=0x02, sync_period_s=None),
     )
     sync_helper = SyncProducerHelper(network) # 创建 SYNC 生产者助手
     sync_enabled = False
@@ -557,7 +557,7 @@ def main() -> None:
     try:
         controller.initialise()
         # 设置某个节点为 SYNC 生产者
-        sync_helper.enable_sync_producer(0x04, SYNC_PERIOD_MS)  
+        sync_helper.enable_sync_producer(0x02, SYNC_PERIOD_MS)  
         sync_enabled = True
 
         network.sync.stop()
@@ -576,8 +576,13 @@ def main() -> None:
         # controller.set_target_angle(20.0)
         # wait_for_target(controller, 20.0, TARGET_REACHED_TIMEOUT_S)
         # time.sleep(1.0)
-        controller.set_target_angle(0.0)
-        wait_for_target(controller, 0.0, TARGET_REACHED_TIMEOUT_S)
+        controller.set_target_angle(240)
+        # wait_for_target(controller, 0.0, TARGET_REACHED_TIMEOUT_S)
+        time.sleep(1.0)
+        controller.get_error_code()
+        print("当前错误代码:", controller.get_error_code())
+        controller.get_statusword()
+        print("当前状态字:", controller.get_statusword())
         time.sleep(1.0)
 
         ''' ------测试CSV模式------ '''
@@ -605,25 +610,25 @@ def main() -> None:
         #     time.sleep(1.0)
 
         ''' ------测试CSP模式------ '''
-        if USE_CSP_VELOCITY_FEEDFORWARD:
-            controller.switch_to_cyclic_synchronous_position(feedforward_control=True)
-        else:
-            controller.switch_to_cyclic_synchronous_position(feedforward_control=False)
-        time.sleep(1.0)
-        trajectory = plan_quintic_trajectory(start_deg=0)
-        if USE_CSP_VELOCITY_FEEDFORWARD:
-            timestamps, planned, actual = run_csp_trajectory_with_feedforward(
-                network,
-                controller,
-                trajectory,
-            )
-        else:
-            timestamps, planned, actual = run_csp_trajectory_via_subscribe(
-                network,
-                controller,
-                trajectory,
-            )
-        plot_results(timestamps, planned, actual)
+        # if USE_CSP_VELOCITY_FEEDFORWARD:
+        #     controller.switch_to_cyclic_synchronous_position(feedforward_control=True)
+        # else:
+        #     controller.switch_to_cyclic_synchronous_position(feedforward_control=False)
+        # time.sleep(1.0)
+        # trajectory = plan_quintic_trajectory(start_deg=0)
+        # if USE_CSP_VELOCITY_FEEDFORWARD:
+        #     timestamps, planned, actual = run_csp_trajectory_with_feedforward(
+        #         network,
+        #         controller,
+        #         trajectory,
+        #     )
+        # else:
+        #     timestamps, planned, actual = run_csp_trajectory_via_subscribe(
+        #         network,
+        #         controller,
+        #         trajectory,
+        #     )
+        # plot_results(timestamps, planned, actual)
 
         ''' ------测试PV模式------ '''
         # controller.switch_to_profile_velocity_mode()
